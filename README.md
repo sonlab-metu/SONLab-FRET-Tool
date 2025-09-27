@@ -28,23 +28,23 @@ SONLab FRET Analysis Tool is a comprehensive graphical application designed for 
 
 #### Windows
 - Windows 10 or later (64-bit)
-- Python 3.8 or later (installed automatically if missing)
-- At least 4 GB of free disk space (8 GB recommended)
+- Python 3.8 or later (required before the installation)
+- At least 8 GB of free disk space 
 - Administrator privileges
 - Internet connection
 
 #### Linux
 - Ubuntu 20.04+, Fedora 38+, or another modern distribution
 - Python 3.8 or later
-- Build tools (`gcc`, `make`, etc.) – installed automatically if missing
-- At least 4 GB of free disk space (8 GB recommended)
+- Build tools
+- At least 8 GB of free disk spacended)
 - Internet connection
 
 #### macOS
 - macOS 12 Monterey or later (Intel & Apple Silicon)
-- Python 3.8 or later (Homebrew installation offered if missing)
-- Xcode Command-Line Tools (prompted automatically)
-- At least 4 GB of free disk space (8 GB recommended)
+- Python 3.8 or later 
+- Xcode Command-Line Tools 
+- At least 8 GB of free disk space
 - Internet connection
 
 ### Python Dependencies
@@ -69,7 +69,7 @@ All Python dependencies are installed automatically by the platform-specific ins
 #### Linux
 ```bash
 # Clone repository and run installer
-git clone https://github.com/aznursoy/SONLab-FRET-Tool.git
+git clone https://github.com/sonlab-metu/SONLab-FRET-Tool.git
 cd SONLab-FRET-Tool/GUI/installers
 chmod +x install_linux.sh
 ./install_linux.sh
@@ -84,13 +84,13 @@ Launch from your applications menu or:
 #### macOS
 ```bash
 # Clone repository and run installer
-git clone https://github.com/aznursoy/SONLab-FRET-Tool.git
+git clone https://github.com/sonlab-metu/SONLab-FRET-Tool.git
 cd SONLab-FRET-Tool/GUI/installers
 chmod +x install_mac.sh
 ./install_mac.sh
 ```
 The installer will:
-- Offer to install Homebrew/python if missing
+- Require to install Homebrew/python if missing
 - Create a virtual environment and install dependencies (including PyTorch MPS or CPU)
 - Build a signed **`SONLab FRET Tool.app`** bundle in `~/Applications/SONLab_FRET_Tool`
 - Create a terminal launcher `start_fret_tool.sh`
@@ -119,19 +119,6 @@ During installation you’ll be prompted to pick:
 
 For further help open an issue in the GitHub repository.
 
-## Usage
-
-After installation:
-```bash
-# Example (Linux/macOS)
-~/SONLab_FRET_Tool/start_fret_tool.sh
-```
-or open the app shortcut. The interface provides three main tabs:
-
-1. **Bleed-Through Correction** – calibrate donor/acceptor bleed-through.
-2. **Segmentation** – automated (Otsu, adaptive) or Cellpose-based segmentation.
-3. **FRET Analysis** – compute pixel-wise FRET efficiency and export CSVs.
-
 ## Contributing & License
 
 Contributions are welcome — please read [`CONTRIBUTING.md`](CONTRIBUTING.md).
@@ -140,8 +127,8 @@ Licensed under the MIT License. See [`LICENSE`](LICENSE) for details.
 
 ## Contact
 
-- 💬 Discussions / issues on [GitHub](https://github.com/aznursoy/SONLab-FRET-Tool)
-- 📧 support@sonlab.org
+- 💬 Discussions / issues on [GitHub](https://github.com/sonlab-metu/SONLab-FRET-Tool)
+- 📧 sonlab@metu.edu.tr
 
 ---
 <div align="center">
