@@ -1,78 +1,120 @@
-# SONLab FRET Tool Installation
+# SONLab FRET Tool Installation Guide
 
-This directory contains the installation scripts for the SONLab FRET Tool. The tool supports both Windows and Linux operating systems.
+This document provides detailed installation instructions for the SONLab FRET Tool on Windows, Linux, and macOS systems.
 
 ## Prerequisites
 
-### Windows
-- Windows 10 or later
-- At least 4GB of free disk space
-- Administrator privileges (required for installation)
-
-### Linux
-- A modern Linux distribution (Ubuntu 20.04+, CentOS 8+, etc.)
-- At least 4GB of free disk space
-- Build tools (gcc, make, etc.) - will be installed automatically if missing
-- curl - will be installed automatically if missing
+### All Systems
+- At least 8GB of free disk space
+- Stable internet connection
+- Python 3.8 or later (will be required for the installation)
 
 ## Installation Instructions
 
-### Windows
-1. Download the `install_windows.bat` script
-2. Right-click the script and select "Run as administrator"
-3. Follow the on-screen instructions to complete the installation
-4. A desktop shortcut will be created for easy access
+### Windows Installation
 
-### Linux
-1. Open a terminal
-2. Make the installation script executable:
+1. **Download and Extract**
+   - Download the `SONLab-FRET-Tool` repository
+   - Extract it to your desired location (e.g., `C:\Users\YourUsername\SONLab-FRET-Tool`)
+
+2. **Run the Installer**
+   - Open PowerShell as Administrator
+   - Navigate to the installers directory:
+     ```powershell
+     cd "path\to\SONLab-FRET-Tool\installers"
+     ```
+   - Run the installation script:
+     ```powershell
+     Set-ExecutionPolicy Bypass -Scope Process -Force; .\install_windows.ps1
+     ```
+
+3. **Complete the Installation**
+   - Follow the on-screen prompts to select your PyTorch backend
+   - The installer will create a desktop shortcut and Start Menu entry
+   - The application will be installed in the directory where you extracted the files
+
+### Linux Installation
+
+1. **Extract the Repository**
    ```bash
-   chmod +x install_linux.sh
+   unzip SONLab-FRET-Tool.zip -d ~/
+   cd ~/SONLab-FRET-Tool/installers
    ```
-3. Run the installation script:
+
+2. **Run the Installer**
    ```bash
    ./install_linux.sh
    ```
-4. Follow the on-screen instructions to complete the installation
-5. A desktop launcher will be created for easy access
+   - The script will request sudo privileges to install system dependencies
+   - A desktop launcher will be created in `~/.local/share/applications`
+
+3. **Launch the Application**
+   - Find "SONLab FRET Tool" in your applications menu
+   - Or run from terminal: `~/SONLab-FRET-Tool/start_fret_tool.sh`
+
+### macOS Installation
+
+1. **Extract the Repository**
+   ```bash
+   unzip SONLab-FRET-Tool.zip -d ~/Applications/
+   cd ~/Applications/SONLab-FRET-Tool/installers
+   ```
+
+2. **Run the Installer**
+   ```bash
+   bash install_mac.sh
+   ```
+   - The script will install Homebrew if needed
+   - It will create an application bundle in `~/Applications/SONLab_FRET_Tool.app`
+
+3. **First Run**
+   - If you see a security warning, right-click the app and select "Open"
+   - Then click "Open" in the security dialog
 
 ## PyTorch Backend Selection
 
 During installation, you'll be prompted to select a PyTorch backend:
 
-1. **CUDA 11.8** - For NVIDIA GPUs with CUDA 11.8
-2. **CUDA 12.6** - For NVIDIA GPUs with CUDA 12.6
-3. **CUDA 12.8** - For NVIDIA GPUs with CUDA 12.8
-4. **ROCm 6.3** - For AMD GPUs with ROCm 6.3
-5. **CPU only** - For systems without GPU acceleration
-
-Choose the option that matches your hardware. If you're unsure, select the CPU-only option.
+1. **NVIDIA CUDA 11.8** - For NVIDIA GPUs
+2. **NVIDIA CUDA 12.6** - For newer NVIDIA GPUs
+3. **NVIDIA CUDA 12.8** - For latest NVIDIA GPUs
+4. **AMD ROCm 6.3** - For AMD GPUs (Linux only)
+5. **CPU only** - No GPU acceleration
 
 ## Uninstallation
 
 ### Windows
-Run the `uninstall.bat` file in the installation directory.
+- Delete the `SONLab-FRET-Tool` directory
+- Remove the desktop shortcut and Start Menu entry
 
 ### Linux
-Run the `uninstall.sh` script in the installation directory.
+```bash
+rm -rf ~/SONLab-FRET-Tool
+rm ~/.local/share/applications/sonlab-fret-tool.desktop
+```
+
+### macOS
+```bash
+rm -rf ~/Applications/SONLab_FRET_Tool.app
+rm -rf ~/Applications/SONLab-FRET-Tool
+```
 
 ## Troubleshooting
 
 ### Common Issues
 
 #### Installation Fails
-- Ensure you have sufficient disk space (at least 4GB free)
-- Make sure you have a stable internet connection
-- Run the installer as administrator (Windows) or with sudo (Linux) if needed
+- Ensure you have at least 8GB free disk space
+- Verify your internet connection is stable
+- Run the installer with administrator/root privileges if needed
 
-#### PyTorch CUDA Issues
-If you experience issues with CUDA:
-1. Verify your GPU supports the selected CUDA version
-2. Ensure you have the correct NVIDIA drivers installed
+#### GPU Acceleration Issues
+1. Verify your GPU is supported by the selected backend
+2. Ensure you have the latest drivers installed
 3. Try the CPU-only version if GPU acceleration is not required
 
-### Getting Help
-For additional support, please contact the SONLab support team.
+## Support
+For additional assistance, please contact the SONLab support team.
 
 ## License
 This software is licensed under the terms of the MIT License. See the [LICENSE](../LICENSE) file for details.

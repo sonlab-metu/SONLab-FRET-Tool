@@ -24,98 +24,130 @@ SONLab FRET Analysis Tool is a comprehensive graphical application designed for 
 
 ## Installation
 
-### Prerequisites
+We provide two methods to install the SONLab FRET Tool:
+1. **Using Installers** (Recommended): Simple, automated installation with a desktop launcher
+2. **Manual Installation**: For advanced users who want more control
 
-#### Windows
-- Windows 10 or later (64-bit)
-- Python 3.8 or later (required before the installation)
-- At least 8 GB of free disk space 
-- Administrator privileges
-- Internet connection
+### 1. Installation Using Installers (Recommended)
 
-#### Linux
-- Ubuntu 20.04+, Fedora 38+, or another modern distribution
+For automated installation with desktop integration, please refer to the installation scripts in the `installers/` directory:
+
+- Windows: Run `installers/install_windows.bat`
+- Linux: Run `installers/install_linux.sh`
+- macOS: Run `installers/install_mac.sh`
+
+See the [Installers Documentation](installers/README.md) for detailed instructions.
+
+### 2. Manual Installation
+
+For advanced users who prefer manual setup:
+
+#### Prerequisites
+
+**All Platforms:**
 - Python 3.8 or later
-- Build tools
-- At least 8 GB of free disk spacended)
-- Internet connection
-
-#### macOS
-- macOS 12 Monterey or later (Intel & Apple Silicon)
-- Python 3.8 or later 
-- Xcode Command-Line Tools 
+- pip (Python package manager)
+- Git (or download the repository as ZIP)
 - At least 8 GB of free disk space
 - Internet connection
 
-### Python Dependencies
+**Additional for Linux:**
+- Build tools
+- Python development headers
 
-All Python dependencies are installed automatically by the platform-specific installers and include (non-exhaustive):
+**Additional for macOS:**
+- Xcode Command Line Tools
+- Homebrew (recommended for Python installation)
 
-- PyQt5
-- numpy, scipy, matplotlib, scikit-image, scikit-learn
-- opencv-python, tifffile, cellpose
-- torch (with optional CUDA / ROCm / MPS acceleration)
+#### Installation Steps
 
-### Installation Instructions
+1. **Clone or Download the Repository**
+   ```bash
+   git clone https://github.com/sonlab-metu/SONLab-FRET-Tool.git
+   cd SONLab-FRET-Tool
+   ```
+   Or download the ZIP and extract it.
 
-> **Tip** : Each installer creates an isolated **virtual environment** inside the installation directory so it will not disturb your system Python.
+2. **Create and Activate a Virtual Environment**
 
-#### Windows
-1. **Download** the repository ZIP or clone with Git and open **`GUI/installers`**.
-2. **Run** `install_windows.bat` as **Administrator** (right-click ▶ “Run as administrator”).
-3. Follow the prompts to choose an installation path and PyTorch backend.
-4. **Launch** via the desktop shortcut *SONLab FRET Tool* or `start_fret_tool.bat` in the install folder.
+   **Windows (Command Prompt):**
+   ```cmd
+   python -m venv venv
+   .\venv\Scripts\activate
+   ```
 
-#### Linux
+   **Linux/macOS:**
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate
+   ```
+
+3. **Install Dependencies**
+   ```bash
+   # Install core requirements
+   pip install -r installers/requirements.txt
+   ```
+
+When installing PyTorch, choose the appropriate version for your hardware. Run one of the following commands based on your compute platform:
+
+**NVIDIA GPUs with CUDA 11.8**
+   ```bash
+   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+   ```
+
+ **NVIDIA GPUs with CUDA 12.6**
+   ```bash
+   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+   ```
+
+ **NVIDIA GPUs with CUDA 12.8**
+   ```bash
+   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+   ```
+
+ **AMD GPUs with ROCm 6.3** (Linux only)
+   ```bash
+   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.3
+   ```
+
+ **CPU-only** (No GPU acceleration)
+   ```bash
+   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+   ```
+
+**Note for macOS Users:**
+- PyTorch will automatically use the Metal Performance Shaders (MPS) backend on Apple Silicon.
+- Use the standard CPU installation command for macOS.
+
+4. **Run the Application**
+   ```bash
+   # From the project root directory
+   python3 -m GUI.main_gui
+   ```
+
+   **Note:** This method doesn't create a desktop shortcut or application launcher. You'll need to activate the virtual environment and run the command each time.
+
+#### Running Without Virtual Environment (Not Recommended)
+
+If you choose not to use a virtual environment (not recommended), you can install the requirements directly:
+
 ```bash
-# Clone repository and run installer
-git clone https://github.com/sonlab-metu/SONLab-FRET-Tool.git
-cd SONLab-FRET-Tool/GUI/installers
-chmod +x install_linux.sh
-./install_linux.sh
-```
-The script will install build tools (via `sudo`), create a virtual environment, install dependencies and add a desktop entry.
-
-Launch from your applications menu or:
-```bash
-~/SONLab_FRET_Tool/start_fret_tool.sh
+pip install -r installers/requirements.txt
+# Install PyTorch as shown above
+python3 -m GUI.main_gui
 ```
 
-#### macOS
-```bash
-# Clone repository and run installer
-git clone https://github.com/sonlab-metu/SONLab-FRET-Tool.git
-cd SONLab-FRET-Tool/GUI/installers
-chmod +x install_mac.sh
-./install_mac.sh
-```
-The installer will:
-- Require to install Homebrew/python if missing
-- Create a virtual environment and install dependencies (including PyTorch MPS or CPU)
-- Build a signed **`SONLab FRET Tool.app`** bundle in `~/Applications/SONLab_FRET_Tool`
-- Create a terminal launcher `start_fret_tool.sh`
 
-Launch via **Finder ▶ Applications ▶ SONLab FRET Tool** or:
-```bash
-~/Applications/SONLab_FRET_Tool/start_fret_tool.sh
-```
-If macOS blocks the app, right-click ▸ **Open** to bypass Gatekeeper once.
-
-### PyTorch Backend Selection
-During installation you’ll be prompted to pick:
-- **CUDA 11.8 / 12.x** for NVIDIA GPUs (Windows & Linux)
-- **ROCm 6.3** for AMD GPUs (Linux)
-- **MPS** for Apple Silicon (macOS)
-- **CPU-only** if no GPU acceleration is required
 
 ### Troubleshooting
 
-| Issue | Fix |
-|-------|-----|
-| *Python not found* | Ensure Python 3.8+ is installed / added to PATH. The installer will guide you. |
-| *Permission denied* | Windows: run installer as Administrator.<br>Linux: don’t use `sudo` except when prompted.<br>macOS: ensure installer script is executable `chmod +x`. |
-| *Icon not showing* | Log out/in or run `update-desktop-database ~/.local/share/applications` (Linux). |
-| *Import errors after install* | Delete the install dir and rerun installer; ensure you selected the correct backend. |
+| Issue | Solution |
+|-------|----------|
+| **Python not found** | Ensure Python 3.8+ is installed and in your system PATH |
+| **Missing dependencies** | Install required system packages (see Prerequisites) |
+| **Import errors** | Make sure all Python dependencies are installed in the virtual environment |
+| **GPU not detected** | Verify CUDA/cuDNN is installed and compatible with your PyTorch version |
+| **macOS app security** | If blocked, right-click the app and select Open, then confirm |
 
 For further help open an issue in the GitHub repository.
 
@@ -134,3 +166,4 @@ Licensed under the MIT License. See [`LICENSE`](LICENSE) for details.
 <div align="center">
   <sub>Developed with ❤️ by SONLab Research Group — © 2025 SONLab</sub>
 </div>
+
