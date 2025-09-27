@@ -1,0 +1,38 @@
+{
+    "donor_params": {
+        "sigma": 2.0,
+        "use_sampling": true,
+        "sample_size": 10000,
+        "selected_fit_model": "Exponential",
+        "fit_results": {
+            "Constant": 0.03211481676740918,
+            "Linear": [
+                -0.00010419927350963461,
+                0.03767088634937892
+            ],
+            "Exponential": [
+                0.03093130099618507,
+                0.013327343750087893,
+                0.01576137154947447
+            ]
+        }
+    },
+    "acceptor_params": {
+        "sigma": 2.0,
+        "use_sampling": true,
+        "sample_size": 10000,
+        "selected_fit_model": "Exponential",
+        "fit_results": {
+            "Constant": 0.01377030055129699,
+            "Linear": [
+                -1.2993196621221499e-05,
+                0.016325927686999756
+            ],
+            "Exponential": [
+                0.01484897594017206,
+                0.008953738140762493,
+                0.01030128044991181
+            ]
+        }
+    }
+}
