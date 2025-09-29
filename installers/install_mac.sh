@@ -13,6 +13,8 @@ APP_NAME="SONLab FRET Tool"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 VENV_DIR="$PROJECT_ROOT/venv"
+ICON_SRC="$PROJECT_ROOT/GUI/logos/logo.png"
+ICON_DEST="$PROJECT_ROOT/AppIcon.icns"
 
 # Function to display section headers
 section() {
@@ -95,7 +97,12 @@ check_python_version() {
 # Check for Python 3.10
 PYTHON_CMD="python3.10"
 if ! check_python_version "$PYTHON_CMD"; then
-    # Try with python3
+    # Try with python3.10 from Homebrew if installed
+    if [ -f "/usr/local/bin/python3.10" ]; then
+        PYTHON_CMD="/usr/local/bin/python3.10"
+    fi
+    if ! check_python_version "$PYTHON_CMD"; then
+        # Try with python3
     PYTHON_CMD="python3"
     if ! check_python_version "$PYTHON_CMD"; then
         warning "Python 3.10 is required but not found."
@@ -210,15 +217,17 @@ case $PLATFORM_CHOICE in
         ;;
 esac
 
-# No need to copy files, we'll use them in place
-
-# Create macOS application bundle
-section "Creating macOS Application"
-APP_NAME="SONLab FRET Tool"
+# Set up paths for the application
 APP_PATH="/Applications/$APP_NAME.app"
 APP_CONTENTS="$APP_PATH/Contents"
 APP_MACOS="$APP_CONTENTS/MacOS"
 APP_RESOURCES="$APP_CONTENTS/Resources"
+
+# Ensure we have the required directories
+mkdir -p "$PROJECT_ROOT/GUI/logos" "$PROJECT_ROOT/lut_files" || error "Failed to create required directories"
+
+# Create macOS application bundle
+section "Creating macOS Application"
 
 # Remove existing app if it exists
 if [ -d "$APP_PATH" ]; then
@@ -230,6 +239,25 @@ fi
 status "Creating application bundle..."
 mkdir -p "$APP_MACOS"
 mkdir -p "$APP_RESOURCES"
+
+# Create the main executable
+APP_MAIN="$APP_MACOS/$APP_NAME"
+cat > "$APP_MAIN" << 'EOL'
+#!/bin/bash
+# Get the directory of the app bundle
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )"
+# Use the directory where the app bundle is located
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")/$(basename "$SCRIPT_DIR/..")"
+
+# Activate virtual environment
+source "$PROJECT_DIR/venv/bin/activate"
+
+# Run the application
+exec python -m GUI.main_gui "$@"
+EOL
+
+# Make the main executable
+chmod +x "$APP_MAIN"
 
 # Create Info.plist
 cat > "$APP_CONTENTS/Info.plist" << 'EOL'
@@ -255,44 +283,99 @@ cat > "$APP_CONTENTS/Info.plist" << 'EOL'
 </plist>
 EOL
 
-# Create the app bundle launcher
-cat > "$APP_MACOS/SONLab_FRET_Tool" << 'EOL'
-#!/bin/bash
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )"
-source "$SCRIPT_DIR/venv/bin/activate"
-python -m GUI.main_gui "$@"
+# Create Info.plist
+cat > "$APP_CONTENTS/Info.plist" << EOL
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>$APP_NAME</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon.icns</string>
+    <key>CFBundleIdentifier</key>
+    <string>org.sonlab.frettool</string>
+    <key>CFBundleName</key>
+    <string>$APP_NAME</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleVersion</key>
+    <string>1.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSRequiresAquaSystemAppearance</key>
+    <false/>
+</dict>
+</plist>
 EOL
 
-# Make the launcher executable
-chmod +x "$APP_MACOS/$APP_NAME"
-
-# Copy the icon to the resources
-if [ -f "$ICON_DEST" ]; then
+# Handle application icon
+if [ -f "$ICON_SRC" ]; then
+    status "Creating application icon..."
+    # Create iconset directory
+    ICONSET_DIR="$PROJECT_ROOT/$APP_NAME.iconset"
+    mkdir -p "$ICONSET_DIR"
+    
+    # Generate icons in different sizes
+    sips -z 16 16 "$ICON_SRC" --out "$ICONSET_DIR/icon_16x16.png"
+    sips -z 32 32 "$ICON_SRC" --out "$ICONSET_DIR/icon_16x16@2x.png"
+    sips -z 32 32 "$ICON_SRC" --out "$ICONSET_DIR/icon_32x32.png"
+    sips -z 64 64 "$ICON_SRC" --out "$ICONSET_DIR/icon_32x32@2x.png"
+    sips -z 128 128 "$ICON_SRC" --out "$ICONSET_DIR/icon_128x128.png"
+    sips -z 256 256 "$ICON_SRC" --out "$ICONSET_DIR/icon_128x128@2x.png"
+    sips -z 256 256 "$ICON_SRC" --out "$ICONSET_DIR/icon_256x256.png"
+    sips -z 512 512 "$ICON_SRC" --out "$ICONSET_DIR/icon_256x256@2x.png"
+    sips -z 512 512 "$ICON_SRC" --out "$ICONSET_DIR/icon_512x512.png"
+    
+    # Create .icns file
+    iconutil -c icns "$ICONSET_DIR" -o "$ICON_DEST"
+    
+    # Clean up
+    rm -rf "$ICONSET_DIR"
+    
+    # Copy icon to app bundle
     cp "$ICON_DEST" "$APP_RESOURCES/AppIcon.icns"
-    status "Application icon added to bundle"
+    status "Application icon created and added to bundle"
 else
-    warning "Could not find application icon"
+    warning "Could not find source icon at $ICON_SRC"
 fi
 
-# Create a simple launcher script in the project directory
+# Create a launcher script in the project directory
 status "Creating launcher script..."
-cat > "$PROJECT_ROOT/start_fret_tool.sh" << 'EOF'
+cat > "$PROJECT_ROOT/start_${APP_NAME// /_}.sh" << EOF
 #!/bin/bash
-
 # Get the directory where this script is located
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+SCRIPT_DIR="\$( cd "\$( dirname "\${BASH_SOURCE[0]}" )" && pwd )"
+
+# Check if virtual environment exists
+if [ ! -d "\$SCRIPT_DIR/venv" ]; then
+    echo "Error: Virtual environment not found at \$SCRIPT_DIR/venv"
+    echo "Please run the installer again to set up the environment"
+    exit 1
+fi
 
 # Activate virtual environment
-source "$SCRIPT_DIR/venv/bin/activate"
+source "\$SCRIPT_DIR/venv/bin/activate"
 
 # Run the application
-python -m GUI.main_gui "$@"
+exec python -m GUI.main_gui "\$@"
 EOF
 
 # Make the launcher executable
-chmod +x "$PROJECT_ROOT/start_fret_tool.sh"
+chmod +x "$PROJECT_ROOT/start_$APP_NAME.sh"
 
-# Create a desktop shortcut
+# Finalize application bundle
+status "Finalizing $APP_NAME.app..."
+
+# Set permissions
+chmod -R 755 "$APP_PATH"
+chmod +x "$APP_PATH/Contents/MacOS/$APP_NAME"
+
+# Create desktop shortcut
 DESKTOP_SHORTCUT="$HOME/Desktop/$APP_NAME.desktop"
 cat > "$DESKTOP_SHORTCUT" << EOF
 [Desktop Entry]
@@ -301,54 +384,33 @@ Type=Application
 Name=$APP_NAME
 Comment=FRET Analysis Tool
 Exec=$APP_PATH/Contents/MacOS/$APP_NAME
-Icon=$APP_RESOURCES/AppIcon.icns
+Icon=$APP_PATH/Contents/Resources/AppIcon.icns
 Terminal=false
 Categories=Science;Biology;
 EOF
-
-# Make the desktop shortcut executable
 chmod +x "$DESKTOP_SHORTCUT"
-
-# Finalize application bundle
-status "Finalizing $APP_NAME.app..."
-
-# Set the application icon
-if [ -f "$ICON_DEST" ]; then
-    # Convert the icon to icns format if needed
-    if [ ! -f "$PROJECT_ROOT/AppIcon.icns" ]; then
-        cp "$ICON_DEST" "$PROJECT_ROOT/AppIcon.icns"
-    fi
-    
-    # Set the icon for the app bundle
-    Rez -append "$PROJECT_ROOT/AppIcon.icns" -o "$APP_PATH/Icon"
-    SetFile -a C "$APP_PATH"
-fi
-
-# Set permissions
-chmod -R 755 "$APP_PATH"
-chmod +x "$APP_PATH/Contents/MacOS/$APP_NAME"
 
 # Verify the app bundle
 if [ -d "$APP_PATH" ]; then
-    success "Successfully created $APP_NAME.app in Applications folder"
-    status "You can now launch $APP_NAME from:"
-    echo "  • Applications folder"
-    echo "  • Desktop shortcut"
-    echo "  • Terminal: $PROJECT_ROOT/start_fret_tool.sh"
+    success "Installation completed successfully!"
+    echo -e "\n${GREEN}You can now run $APP_NAME using one of these methods:${NC}"
+    echo "1. Double-click the '$APP_NAME' app in your Applications folder"
+    echo "2. Double-click the '$APP_NAME' icon on your Desktop"
+    echo "3. Run from terminal: ${BOLD}$PROJECT_ROOT/start_${APP_NAME// /_}.sh${NC}"
+    echo ""
+    echo "Note: If you see a security warning when first running the app:"
+    echo "  1. Right-click the app in Finder"
+    echo "  2. Select 'Open'"
+    echo "  3. Click 'Open' in the security dialog"
+    echo -e "\n${YELLOW}Note:${NC} On first run, you may need to right-click the app and select 'Open' to bypass macOS security restrictions."
 else
     warning "Failed to create application bundle"
     status "You can still run the application using:"
-    echo "  $PROJECT_ROOT/start_fret_tool.sh"
+    echo "  $PROJECT_ROOT/start_${APP_NAME// /_}.sh"
+    echo "  python -m GUI.main_gui"
 fi
 
-# Copy all Python files to the temporary GUI package
-cp "$SCRIPT_DIR/app/"*.py "$TEMP_GUI_DIR/GUI/"
-
-# Create __init__.py if it doesn't exist
-touch "$TEMP_GUI_DIR/GUI/__init__.py"
-
-# Create a temporary main script
-cat > "$TEMP_GUI_DIR/run_app.py" << 'PYTHON_SCRIPT'
+# No need for temporary GUI package, we're using the files in place
 import sys
 import os
 
