@@ -32,7 +32,7 @@ We provide two methods to install the SONLab FRET Tool:
 
 For automated installation with desktop integration, please refer to the installation scripts in the `installers/` directory:
 
-- Windows: Run `installers/install_windows.bat`
+- Windows: Run `installers/install_windows.ps1`
 - Linux: Run `installers/install_linux.sh`
 - macOS: Run `installers/install_mac.sh`
 
