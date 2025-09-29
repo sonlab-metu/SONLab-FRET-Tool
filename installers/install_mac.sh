@@ -165,19 +165,8 @@ if ! xcode-select -p &>/dev/null; then
     echo ""
 fi
 
-# Create installation directory
+# Prepare installation directory
 status "Preparing installation directory..."
-mkdir -p "$PROJECT_ROOT/app" || error "Failed to create installation directory"
-
-# Check if the directory is empty
-if [ "$(ls -A "$PROJECT_ROOT/app" 2>/dev/null)" ]; then
-    echo -e "${YELLOW}Warning: The directory $PROJECT_ROOT/app is not empty.${NC}"
-    echo -n "Do you want to continue? [y/N] "
-    read -r
-    if [ "$REPLY" != "y" ] && [ "$REPLY" != "Y" ]; then
-        exit 1
-    fi
-fi
 
 # Create virtual environment in the project root
 section "Setting Up Python Environment"
@@ -221,36 +210,24 @@ case $PLATFORM_CHOICE in
         ;;
 esac
 
-# Copy LUT files
-status "Copying LUT files..."
-if [ -d "$PROJECT_ROOT/lut_files" ]; then
-    cp -r "$PROJECT_ROOT/lut_files/"* "$PROJECT_ROOT/app/" 2>/dev/null || \
-        warning "Failed to copy LUT files"
-else
-    cp "$PROJECT_ROOT/"*.lut "$PROJECT_ROOT/app/" 2>/dev/null || \
-        warning "No LUT files found to copy"
-fi
-
-# Copy JSON config files
-status "Copying configuration files..."
-cp "$PROJECT_ROOT/"*.json "$PROJECT_ROOT/app/" 2>/dev/null || \
-    warning "No JSON configuration files found to copy"
-
-# Copy GUI directory if it exists
-if [ -d "$PROJECT_ROOT/GUI" ]; then
-    status "Copying GUI files..."
-    cp -r "$PROJECT_ROOT/GUI" "$PROJECT_ROOT/app/" || \
-        warning "Failed to copy GUI directory"
-fi
+# No need to copy files, we'll use them in place
 
 # Create macOS application bundle
 section "Creating macOS Application"
-APP_PATH="/Applications/SONLab FRET Tool.app"
+APP_NAME="SONLab FRET Tool"
+APP_PATH="/Applications/$APP_NAME.app"
 APP_CONTENTS="$APP_PATH/Contents"
 APP_MACOS="$APP_CONTENTS/MacOS"
 APP_RESOURCES="$APP_CONTENTS/Resources"
 
+# Remove existing app if it exists
+if [ -d "$APP_PATH" ]; then
+    status "Removing existing $APP_NAME.app..."
+    rm -rf "$APP_PATH"
+fi
+
 # Create the app bundle structure
+status "Creating application bundle..."
 mkdir -p "$APP_MACOS"
 mkdir -p "$APP_RESOURCES"
 
@@ -287,14 +264,17 @@ python -m GUI.main_gui "$@"
 EOL
 
 # Make the launcher executable
-chmod +x "$APP_MACOS/SONLab_FRET_Tool"
+chmod +x "$APP_MACOS/$APP_NAME"
 
 # Copy the icon to the resources
-if [ -f "$PROJECT_ROOT/app/AppIcon.icns" ]; then
-    cp "$PROJECT_ROOT/app/AppIcon.icns" "$APP_RESOURCES/AppIcon.icns"
+if [ -f "$ICON_DEST" ]; then
+    cp "$ICON_DEST" "$APP_RESOURCES/AppIcon.icns"
+    status "Application icon added to bundle"
+else
+    warning "Could not find application icon"
 fi
 
-# Create a launcher script
+# Create a simple launcher script in the project directory
 status "Creating launcher script..."
 cat > "$PROJECT_ROOT/start_fret_tool.sh" << 'EOF'
 #!/bin/bash
@@ -311,16 +291,55 @@ EOF
 
 # Make the launcher executable
 chmod +x "$PROJECT_ROOT/start_fret_tool.sh"
-    echo "Error: App directory not found at $SCRIPT_DIR/app"
-    exit 1
+
+# Create a desktop shortcut
+DESKTOP_SHORTCUT="$HOME/Desktop/$APP_NAME.desktop"
+cat > "$DESKTOP_SHORTCUT" << EOF
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=$APP_NAME
+Comment=FRET Analysis Tool
+Exec=$APP_PATH/Contents/MacOS/$APP_NAME
+Icon=$APP_RESOURCES/AppIcon.icns
+Terminal=false
+Categories=Science;Biology;
+EOF
+
+# Make the desktop shortcut executable
+chmod +x "$DESKTOP_SHORTCUT"
+
+# Finalize application bundle
+status "Finalizing $APP_NAME.app..."
+
+# Set the application icon
+if [ -f "$ICON_DEST" ]; then
+    # Convert the icon to icns format if needed
+    if [ ! -f "$PROJECT_ROOT/AppIcon.icns" ]; then
+        cp "$ICON_DEST" "$PROJECT_ROOT/AppIcon.icns"
+    fi
+    
+    # Set the icon for the app bundle
+    Rez -append "$PROJECT_ROOT/AppIcon.icns" -o "$APP_PATH/Icon"
+    SetFile -a C "$APP_PATH"
 fi
 
-# Create a temporary directory for the GUI package
-TEMP_GUI_DIR="$(mktemp -d)"
-trap 'rm -rf "$TEMP_GUI_DIR"' EXIT
+# Set permissions
+chmod -R 755 "$APP_PATH"
+chmod +x "$APP_PATH/Contents/MacOS/$APP_NAME"
 
-# Create the GUI package structure
-mkdir -p "$TEMP_GUI_DIR/GUI"
+# Verify the app bundle
+if [ -d "$APP_PATH" ]; then
+    success "Successfully created $APP_NAME.app in Applications folder"
+    status "You can now launch $APP_NAME from:"
+    echo "  • Applications folder"
+    echo "  • Desktop shortcut"
+    echo "  • Terminal: $PROJECT_ROOT/start_fret_tool.sh"
+else
+    warning "Failed to create application bundle"
+    status "You can still run the application using:"
+    echo "  $PROJECT_ROOT/start_fret_tool.sh"
+fi
 
 # Copy all Python files to the temporary GUI package
 cp "$SCRIPT_DIR/app/"*.py "$TEMP_GUI_DIR/GUI/"
