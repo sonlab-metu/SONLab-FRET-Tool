@@ -254,8 +254,13 @@ cat > "$APP_MAIN" << 'EOL'
 #!/bin/bash
 # Get the directory of the app bundle
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )"
-# Use the directory where the app bundle is located
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")/$(basename "$SCRIPT_DIR/..")"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+# Check if virtual environment exists
+if [ ! -d "$PROJECT_DIR/venv" ]; then
+    osascript -e 'display dialog "Error: Virtual environment not found at '$PROJECT_DIR/venv'" buttons {"OK"} default button 1 with icon stop'
+    exit 1
+fi
 
 # Activate virtual environment
 source "$PROJECT_DIR/venv/bin/activate"
