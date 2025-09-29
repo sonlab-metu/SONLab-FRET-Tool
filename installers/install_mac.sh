@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Colors
+# Colors for output
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
@@ -8,16 +8,42 @@ NC='\033[0m' # No Color
 BOLD='\033[1m'
 BLUE='\033[0;34m'
 
+# Application information
+APP_NAME="SONLab FRET Tool"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+INSTALL_DIR="$HOME/Applications/SONLab_FRET_Tool"
+VENV_DIR="$INSTALL_DIR/venv"
+
 # Function to display section headers
 section() {
-    echo ""
-    echo -e "${GREEN}=== $1 ===${NC}"
-    echo ""
+    echo -e "\n${GREEN}=== $1 ===${NC}\n"
+}
+
+# Function to display status messages
+status() {
+    echo -e "${BLUE}➔${NC} $1"
+}
+
+# Function to display success messages
+success() {
+    echo -e "${GREEN}✓${NC} $1"
 }
 
 # Function to display warnings
 warning() {
     echo -e "${YELLOW}⚠ $1${NC}"
+}
+
+# Function to display errors and exit
+error() {
+    echo -e "${RED}✗ $1${NC}" >&2
+    exit 1
+}
+
+# Function to check if a command exists
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
 }
 
 # Check if running as root
@@ -30,62 +56,59 @@ if [ "$(id -u)" -eq 0 ]; then
     fi
 fi
 
+# Check if we're running from the correct directory
+if [ ! -f "$PROJECT_ROOT/GUI/main_gui.py" ]; then
+    error "This script must be run from the 'installers' directory of the extracted SONLab-FRET-Tool package."
+    echo "Please extract the package and run: cd SONLab-FRET-Tool/installers"
+    exit 1
+fi
+
 # Check for Python installation
-section "Checking for Python 3.8 or later"
+section "Checking Dependencies"
+status "Checking for Python 3.8 or later..."
 if ! command -v python3 >/dev/null 2>&1; then
-    echo -e "${RED}Python 3 is not installed.${NC}"
+    error "Python 3 is not installed."
     echo "Please install Python 3.8 or later using one of these methods:"
     echo "  1. Download from https://www.python.org/downloads/"
     echo "  2. Using Homebrew: brew install python@3.9"
-    echo -e "\nAfter installation, please run this script again."
-    exit 1
 fi
 
-# Check for Homebrew
+# Check for Homebrew and Xcode Command Line Tools
+status "Checking for required tools..."
 if ! command -v brew >/dev/null 2>&1; then
-    echo -e "${YELLOW}Homebrew is not installed. It's required for some dependencies.${NC}"
+    warning "Homebrew is not installed. It's required for some dependencies."
     echo -n "Would you like to install Homebrew now? [Y/n] "
     read -r
-    if [ "$REPLY" = "" ] || [ "$REPLY" = "y" ] || [ "$REPLY" = "Y" ]; then
-        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-        echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zshrc
-        eval "$(/opt/homebrew/bin/brew shellenv)"
+    if [ -z "$REPLY" ] || [[ "$REPLY" =~ ^[Yy] ]]; then
+        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" || \
+            error "Failed to install Homebrew"
+        
+        # Add Homebrew to PATH if needed
+        if [[ "$SHELL" == *"zsh"* ]]; then
+            echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zshrc
+            eval "$(/opt/homebrew/bin/brew shellenv)"
+        else
+            echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.bash_profile
+            eval "$(/opt/homebrew/bin/brew shellenv)"
+        fi
     fi
 fi
 
-# Install required tools for icon conversion
-section "Installing required tools"
-if ! command -v sips >/dev/null 2>&1 || ! command -v iconutil >/dev/null 2>&1; then
-    echo "Installing required tools..."
-    xcode-select --install 2>/dev/null || true
+# Install Xcode Command Line Tools if needed
+if ! xcode-select -p &>/dev/null; then
+    status "Installing Xcode Command Line Tools..."
+    xcode-select --install || error "Failed to install Xcode Command Line Tools"
+    # Wait for Xcode installation to complete
+    until xcode-select -p &>/dev/null; do
+        echo -n "."
+        sleep 5
+    done
+    echo ""
 fi
 
-# Get the directory where this script is located
-SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-PROJECT_ROOT=$(dirname "$SCRIPT_DIR")
-
-# Set installation directory
-section "Installation Location"
-echo -e "${GREEN}Where would you like to install SONLab FRET Tool?${NC}"
-echo "Press Enter to use the default location: ~/Applications/SONLab_FRET_Tool"
-echo -n "Installation directory: "
-read -r INSTALL_DIR
-
-# Set default if empty
-if [ -z "$INSTALL_DIR" ]; then
-    INSTALL_DIR="$HOME/Applications/SONLab_FRET_Tool"
-fi
-
-# Expand ~ to home directory
-INSTALL_DIR="${INSTALL_DIR/#\~/$HOME}"
-
-# Create installation directory if it doesn't exist
-mkdir -p "$INSTALL_DIR"
-if [ $? -ne 0 ]; then
-    echo -e "${RED}Error: Could not create installation directory.${NC}"
-    echo "Please check the path and permissions and try again."
-    exit 1
-fi
+# Create installation directory
+status "Preparing installation directory..."
+mkdir -p "$INSTALL_DIR" || error "Failed to create installation directory"
 
 # Check if the directory is empty
 if [ "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]; then
@@ -98,92 +121,146 @@ if [ "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]; then
 fi
 
 # Create virtual environment
-section "Creating Python virtual environment"
-python3 -m venv "$INSTALL_DIR/venv"
-if [ $? -ne 0 ]; then
-    echo -e "${RED}Error: Failed to create virtual environment.${NC}"
-    echo "Please make sure you have the required system packages installed."
-    exit 1
+section "Setting Up Python Environment"
+status "Creating Python virtual environment..."
+if [ -d "$VENV_DIR" ]; then
+    warning "Virtual environment already exists at $VENV_DIR"
+    echo -n "Do you want to recreate it? [y/N] "
+    read -r
+    if [[ "$REPLY" =~ ^[Yy] ]]; then
+        rm -rf "$VENV_DIR"
+        python3 -m venv "$VENV_DIR" || error "Failed to create virtual environment"
+    fi
+else
+    python3 -m venv "$VENV_DIR" || error "Failed to create virtual environment"
 fi
 
+# Activate virtual environment
+source "$VENV_DIR/bin/activate" || error "Failed to activate virtual environment"
+
+# Upgrade pip
+status "Upgrading pip..."
+python3 -m pip install --upgrade pip || warning "Failed to upgrade pip, continuing anyway..."
+
 # Install packages from requirements.txt
-section "Installing Python packages"
-"$INSTALL_DIR/venv/bin/pip" install --upgrade pip
-"$INSTALL_DIR/venv/bin/pip" install -r "$SCRIPT_DIR/requirements.txt"
+status "Installing Python packages..."
+pip install -r "$SCRIPT_DIR/requirements.txt" || error "Failed to install requirements"
 
 # Install PyTorch
 section "Installing PyTorch"
 echo "Select your compute platform:"
-echo "1. CPU only - no GPU acceleration (recommended for most Macs)"
-echo "2. MPS (Metal Performance Shaders) - For Apple Silicon Macs"
+echo "1. CPU only - Recommended for most Macs"
+echo "2. MPS (Metal Performance Shaders) - For Apple Silicon Macs (experimental)"
 echo -n "Enter your choice (1-2): "
 read -r PLATFORM_CHOICE
 
+status "Installing PyTorch with selected backend..."
 case $PLATFORM_CHOICE in
     2)
-        echo "Installing PyTorch with MPS (Metal) support..."
-        "$INSTALL_DIR/venv/bin/pip" install torch torchvision torchaudio
+        # MPS (Metal) backend for Apple Silicon
+        pip install torch torchvision torchaudio || \
+            warning "Failed to install PyTorch with MPS support. Trying with --no-cache-dir..." && \
+            pip install --no-cache-dir torch torchvision torchaudio || \
+            error "Failed to install PyTorch with MPS support"
         ;;
     *)
-        echo "Installing CPU-only PyTorch..."
-        "$INSTALL_DIR/venv/bin/pip" install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+        # CPU-only version (default)
+        pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu || \
+            warning "Failed to install CPU-only PyTorch. Trying with --no-cache-dir..." && \
+            pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu || \
+            error "Failed to install CPU-only PyTorch"
         ;;
 esac
 
-# Create application directory structure
-section "Setting up application files"
-mkdir -p "$INSTALL_DIR/app"
-mkdir -p "$INSTALL_DIR/app/icons"
-mkdir -p "$INSTALL_DIR/app/luts"
+# Set up application files
+section "Setting Up Application Files"
+status "Creating application directory structure..."
+APP_DIR="$INSTALL_DIR/app"
+ICON_DIR="$APP_DIR/icons"
+LUT_DIR="$APP_DIR/luts"
+
+# Create necessary directories
+for dir in "$ICON_DIR" "$LUT_DIR"; do
+    mkdir -p "$dir" || warning "Failed to create directory: $dir"
+done
 
 # Copy Python files
-echo "Copying Python files..."
-cp "$PROJECT_ROOT/"*.py "$INSTALL_DIR/app/"
+status "Copying Python files..."
+cp "$PROJECT_ROOT/"*.py "$APP_DIR/" 2>/dev/null || warning "No Python files found to copy"
 
-# Create iconset for .icns
-echo "Creating application icon..."
-mkdir -p "$INSTALL_DIR/app/icon.iconset"
+# Handle application icon
+status "Creating application icon..."
+ICONSRC="$PROJECT_ROOT/logo.png"
+ICONSET="$APP_DIR/icon.iconset"
+ICON_DEST="$APP_DIR/AppIcon.icns"
 
-# Convert logo.png to .icns format
-if [ -f "$PROJECT_ROOT/logo.png" ]; then
-    sips -z 16 16     "$PROJECT_ROOT/logo.png" --out "$INSTALL_DIR/app/icon.iconset/icon_16x16.png"
-    sips -z 32 32     "$PROJECT_ROOT/logo.png" --out "$INSTALL_DIR/app/icon.iconset/icon_16x16@2x.png"
-    sips -z 32 32     "$PROJECT_ROOT/logo.png" --out "$INSTALL_DIR/app/icon.iconset/icon_32x32.png"
-    sips -z 64 64     "$PROJECT_ROOT/logo.png" --out "$INSTALL_DIR/app/icon.iconset/icon_32x32@2x.png"
-    sips -z 128 128   "$PROJECT_ROOT/logo.png" --out "$INSTALL_DIR/app/icon.iconset/icon_128x128.png"
-    sips -z 256 256   "$PROJECT_ROOT/logo.png" --out "$INSTALL_DIR/app/icon.iconset/icon_128x128@2x.png"
-    sips -z 256 256   "$PROJECT_ROOT/logo.png" --out "$INSTALL_DIR/app/icon.iconset/icon_256x256.png"
-    sips -z 512 512   "$PROJECT_ROOT/logo.png" --out "$INSTALL_DIR/app/icon.iconset/icon_256x256@2x.png"
-    sips -z 512 512   "$PROJECT_ROOT/logo.png" --out "$INSTALL_DIR/app/icon.iconset/icon_512x512.png"
+if [ -f "$ICONSRC" ]; then
+    mkdir -p "$ICONSET" || warning "Failed to create iconset directory"
+    
+    # Generate icons in different sizes
+    sizes=(16 32 64 128 256 512)
+    for size in "${sizes[@]}"; do
+        sips -z $size $size "$ICONSRC" --out "$ICONSET/icon_${size}x${size}.png" || \
+            warning "Failed to create ${size}x${size} icon"
+        
+        # Create @2x versions for Retina displays
+        if [ $size -ge 32 ]; then
+            double_size=$((size * 2))
+            sips -z $double_size $double_size "$ICONSRC" --out "$ICONSET/icon_${size}x${size}@2x.png" || \
+                warning "Failed to create ${size}x${size}@2x icon"
+        fi
+    done
     
     # Create .icns file
-    iconutil -c icns "$INSTALL_DIR/app/icon.iconset" -o "$INSTALL_DIR/app/AppIcon.icns"
-    rm -rf "$INSTALL_DIR/app/icon.iconset"
+    if [ -d "$ICONSET" ]; then
+        iconutil -c icns "$ICONSET" -o "$ICON_DEST" || warning "Failed to create .icns file"
+        rm -rf "$ICONSET"
+    fi
     
-    # Also copy the original icons
-    cp "$PROJECT_ROOT/logo.png" "$INSTALL_DIR/app/icons/"
-    cp "$PROJECT_ROOT/icon.png" "$INSTALL_DIR/app/icons/" 2>/dev/null || true
+    # Copy original icons
+    cp "$ICONSRC" "$ICON_DIR/" || warning "Failed to copy logo.png"
+    [ -f "$PROJECT_ROOT/icon.png" ] && \
+        cp "$PROJECT_ROOT/icon.png" "$ICON_DIR/" 2>/dev/null || true
 else
-    echo -e "${YELLOW}Warning: logo.png not found, skipping .icns creation${NC}"
+    warning "logo.png not found in project root, skipping icon creation"
 fi
 
 # Copy LUT files
-echo "Copying LUT files..."
-cp "$PROJECT_ROOT/"*.lut "$INSTALL_DIR/app/luts/" 2>/dev/null || true
+status "Copying LUT files..."
+if [ -d "$PROJECT_ROOT/lut_files" ]; then
+    cp -r "$PROJECT_ROOT/lut_files/"* "$LUT_DIR/" 2>/dev/null || \
+        warning "Failed to copy LUT files"
+else
+    cp "$PROJECT_ROOT/"*.lut "$LUT_DIR/" 2>/dev/null || \
+        warning "No LUT files found to copy"
+fi
 
 # Copy JSON config files
-echo "Copying configuration files..."
-cp "$PROJECT_ROOT/"*.json "$INSTALL_DIR/app/" 2>/dev/null || true
+status "Copying configuration files..."
+cp "$PROJECT_ROOT/"*.json "$APP_DIR/" 2>/dev/null || \
+    warning "No JSON configuration files found to copy"
+
+# Copy GUI directory if it exists
+if [ -d "$PROJECT_ROOT/GUI" ]; then
+    status "Copying GUI files..."
+    cp -r "$PROJECT_ROOT/GUI" "$APP_DIR/" || \
+        warning "Failed to copy GUI directory"
+fi
 
 # Create macOS application bundle
-section "Creating macOS Application Bundle"
+section "Creating macOS Application"
 APP_BUNDLE="$INSTALL_DIR/SONLab FRET Tool.app"
 APP_CONTENTS="$APP_BUNDLE/Contents"
 APP_MACOS="$APP_CONTENTS/MacOS"
 APP_RESOURCES="$APP_CONTENTS/Resources"
 
-mkdir -p "$APP_MACOS"
-mkdir -p "$APP_RESOURCES"
+# Clean up any existing app bundle
+[ -d "$APP_BUNDLE" ] && rm -rf "$APP_BUNDLE"
+
+# Create bundle structure
+status "Creating application bundle structure..."
+mkdir -p "$APP_MACOS" "$APP_RESOURCES" || \
+    error "Failed to create application bundle structure"
 
 # Create Info.plist
 cat > "$APP_CONTENTS/Info.plist" << EOF
@@ -192,15 +269,15 @@ cat > "$APP_CONTENTS/Info.plist" << EOF
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>SONLab FRET Tool</string>
+    <string>$APP_NAME</string>
     <key>CFBundleDisplayName</key>
-    <string>SONLab FRET Tool</string>
+    <string>$APP_NAME</string>
     <key>CFBundleIdentifier</key>
     <string>com.sonlab.frettool</string>
     <key>CFBundleVersion</key>
-    <string>1.0</string>
+    <string>2.0.2</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
+    <string>2.0.2</string>
     <key>CFBundleExecutable</key>
     <string>SONLab_FRET_Tool</string>
     <key>CFBundlePackageType</key>
@@ -209,6 +286,16 @@ cat > "$APP_CONTENTS/Info.plist" << EOF
     <string>AppIcon.icns</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSRequiresAquaSystemAppearance</key>
+    <false/>
+    <key>LSMinimumSystemVersion</key>
+    <string>10.15</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.science-research</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>This app requires microphone access for certain features.</string>
+    <key>NSCameraUsageDescription</key>
+    <string>This app requires camera access for certain features.</string>
     <key>LSUIElement</key>
     <false/>
 </dict>
@@ -216,42 +303,83 @@ cat > "$APP_CONTENTS/Info.plist" << EOF
 EOF
 
 # Create the launcher script
+status "Creating launcher script..."
 cat > "$APP_MACOS/SONLab_FRET_Tool" << 'EOL'
 #!/bin/bash
+# SONLab FRET Tool Launcher for macOS
+# This script launches the application with the correct Python environment
+
 # Get the directory where this script is located
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-# Go up three levels from MacOS to the .app bundle, then to the actual install directory
-INSTALL_DIR="$(dirname "$(dirname "$(dirname "$SCRIPT_DIR")")")"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+APP_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
+VENV_DIR="$APP_ROOT/venv"
+APP_DIR="$APP_ROOT/app"
 
-# Set the working directory to the install directory
-cd "$INSTALL_DIR"
+# Set environment variables
+export PYTHONUNBUFFERED=1
+export PYTHONPATH="$APP_DIR:$PYTHONPATH"
 
-# Debug information
-echo "SCRIPT_DIR: $SCRIPT_DIR"
-echo "INSTALL_DIR: $INSTALL_DIR"
-echo "Current directory: $(pwd)"
-
-# Check if venv exists
-if [ ! -d "$INSTALL_DIR/venv" ]; then
-    echo "Error: Python virtual environment not found at $INSTALL_DIR/venv"
+# Activate virtual environment
+source "$VENV_DIR/bin/activate" || {
+    osascript -e 'display notification "Failed to activate Python virtual environment" with title "SONLab FRET Tool Error"'
     exit 1
+}
+
+# Set working directory
+cd "$APP_DIR" || {
+    osascript -e 'display notification "Failed to change to application directory" with title "SONLab FRET Tool Error"'
+    exit 1
+}
+
+# Run the application
+python3 -m GUI.main_gui "$@"
+EXIT_CODE=$?
+
+# Show error message if the application crashed
+if [ $EXIT_CODE -ne 0 ]; then
+    osascript -e "display notification \"Application exited with code $EXIT_CODE\" with title \"SONLab FRET Tool Crashed\""
 fi
 
-# Check if app directory exists
-if [ ! -d "$INSTALL_DIR/app" ]; then
-    echo "Error: App directory not found at $INSTALL_DIR/app"
-    exit 1
+exit $EXIT_CODE
+EOL
+
+# Make the launcher executable
+chmod +x "$APP_MACOS/SONLab_FRET_Tool"
+
+# Copy icon to resources
+if [ -f "$APP_DIR/AppIcon.icns" ]; then
+    cp "$APP_DIR/AppIcon.icns" "$APP_RESOURCES/" || warning "Failed to copy app icon"
 fi
 
-# Create a temporary directory for the GUI package
-TEMP_GUI_DIR="$(mktemp -d)"
-trap 'rm -rf "$TEMP_GUI_DIR"' EXIT
+# Create Applications folder shortcut
+status "Creating Applications folder shortcut..."
+ln -sf "$APP_BUNDLE" "$HOME/Applications/$(basename "$APP_BUNDLE")" 2>/dev/null || \
+    warning "Failed to create Applications folder shortcut"
 
-# Create the GUI package structure
-mkdir -p "$TEMP_GUI_DIR/GUI"
+# Finalize installation
+section "Installation Complete!"
+success "$APP_NAME has been successfully installed to:"
+echo -e "  ${BOLD}$INSTALL_DIR${NC}\n"
 
-# Copy all Python files to the temporary GUI package
-cp "$INSTALL_DIR/app/"*.py "$TEMP_GUI_DIR/GUI/"
+echo -e "${GREEN}You can now launch the application using one of these methods:${NC}"
+echo "1. From your Applications folder: $HOME/Applications/$(basename "$APP_BUNDLE")"
+echo "2. From the installation directory: open '$APP_BUNDLE'"
+echo -e "\n${YELLOW}Note:${NC} If you see a security warning when first opening the app, please:"
+echo "  1. Right-click on the app and select 'Open'"
+echo "  2. Click 'Open' in the security dialog"
+echo -e "\n${GREEN}To uninstall:${NC}"
+echo "Simply delete the installation directory: $INSTALL_DIR"
+
+# Open the installation directory in Finder
+if [ -d "/usr/bin/open" ]; then
+    echo -e "\n${BLUE}Opening installation directory in Finder...${NC}"
+    open "$INSTALL_DIR"
+fi
+# Verify installation
+status "Verifying installation..."
+if [ ! -d "$VENV_DIR" ] || [ ! -d "$APP_DIR" ]; then
+    error "Installation verification failed. Some components are missing."
+fi
 
 # Create __init__.py if it doesn't exist
 touch "$TEMP_GUI_DIR/GUI/__init__.py"
@@ -275,11 +403,8 @@ except ImportError as e:
     sys.exit(1)
 PYTHON_SCRIPT
 
-# Set up the Python path
-export PYTHONPATH="$TEMP_GUI_DIR:$INSTALL_DIR"
-
 # Run the application using the virtual environment's Python
-exec "$INSTALL_DIR/venv/bin/python" "$TEMP_GUI_DIR/run_app.py" "$@"
+exec "$VENV_DIR/bin/python" -m GUI.main_gui "$@"
 EOL
 
 # Make the launcher executable

@@ -11,8 +11,25 @@ This document provides detailed installation instructions for the SONLab FRET To
 
 ## Installation Instructions
 
-### Windows Installation
+### Windows Installation (Two Methods Available)
 
+#### Method 1: GUI Installer (Recommended for Most Users)
+1. **Download the Installer**
+   - Download `SONLab_FRET_Tool_Setup.exe` from our [releases page](https://github.com/sonlab-metu/SONLab-FRET-Tool/releases)
+   - The file will be named something like `SONLab_FRET_Tool_Setup_x64.exe`
+
+2. **Run the Installer**
+   - Double-click the downloaded `.exe` file
+   - If you see a security warning, click "More info" then "Run anyway"
+   - Follow the on-screen instructions in the installation wizard
+   - Choose your preferred installation location and components
+   - Select your PyTorch backend (CUDA/CPU) from the options
+
+3. **Complete the Installation**
+   - The installer will create a desktop shortcut and Start Menu entry
+   - You can launch the application from either location after installation
+
+#### Method 2: Manual Installation (Advanced Users)
 1. **Download and Extract**
    - Download the `SONLab-FRET-Tool` repository
    - Extract it to your desired location (e.g., `C:\Users\YourUsername\SONLab-FRET-Tool`)
@@ -31,7 +48,6 @@ This document provides detailed installation instructions for the SONLab FRET To
 3. **Complete the Installation**
    - Follow the on-screen prompts to select your PyTorch backend
    - The installer will create a desktop shortcut and Start Menu entry
-   - The application will be installed in the directory where you extracted the files
 
 ### Linux Installation
 
@@ -84,6 +100,12 @@ During installation, you'll be prompted to select a PyTorch backend:
 ## Uninstallation
 
 ### Windows
+#### For GUI Installation:
+- Open Windows Settings > Apps > Apps & features
+- Find "SONLab FRET Tool" in the list
+- Click Uninstall and follow the prompts
+
+#### For Manual Installation:
 - Delete the `SONLab-FRET-Tool` directory
 - Remove the desktop shortcut and Start Menu entry
 
@@ -113,8 +135,13 @@ rm -rf ~/Applications/SONLab-FRET-Tool
 2. Ensure you have the latest drivers installed
 3. Try the CPU-only version if GPU acceleration is not required
 
+## Download the GUI Installer
+
+The latest GUI installer can be downloaded from our [releases page](https://github.com/sonlab-metu/SONLab-FRET-Tool/releases). Look for the `.exe` file in the "Assets" section of the latest release.
+
 ## Support
-For additional assistance, please contact the SONLab support team.
+
+For additional assistance, please contact the SONLab support team or open an issue on our [GitHub repository](https://github.com/sonlab-metu/SONLab-FRET-Tool/issues).
 
 ## License
 This software is licensed under the terms of the MIT License. See the [LICENSE](../LICENSE) file for details.
