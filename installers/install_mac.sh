@@ -100,10 +100,14 @@ if ! check_python_version "$PYTHON_CMD"; then
     # Try with python3.10 from Homebrew if installed
     if [ -f "/usr/local/bin/python3.10" ]; then
         PYTHON_CMD="/usr/local/bin/python3.10"
-    fi
-    if ! check_python_version "$PYTHON_CMD"; then
+        if check_python_version "$PYTHON_CMD"; then
+            status "Found Python 3.10 at $PYTHON_CMD"
+        fi
+    else
         # Try with python3
-    PYTHON_CMD="python3"
+        PYTHON_CMD="python3"
+    fi
+    
     if ! check_python_version "$PYTHON_CMD"; then
         warning "Python 3.10 is required but not found."
         echo "Please install Python 3.10 using one of these methods:"
@@ -203,17 +207,21 @@ status "Installing PyTorch with selected backend..."
 case $PLATFORM_CHOICE in
     2)
         # MPS (Metal) backend for Apple Silicon
-        pip install torch torchvision torchaudio || \
-            warning "Failed to install PyTorch with MPS support. Trying with --no-cache-dir..." && \
-            pip install --no-cache-dir torch torchvision torchaudio || \
-            error "Failed to install PyTorch with MPS support"
+        if ! pip install torch torchvision torchaudio; then
+            warning "Failed to install PyTorch with MPS support. Trying with --no-cache-dir..."
+            if ! pip install --no-cache-dir torch torchvision torchaudio; then
+                error "Failed to install PyTorch with MPS support"
+            fi
+        fi
         ;;
     *)
         # CPU-only version (default)
-        pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu || \
-            warning "Failed to install CPU-only PyTorch. Trying with --no-cache-dir..." && \
-            pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu || \
-            error "Failed to install CPU-only PyTorch"
+        if ! pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu; then
+            warning "Failed to install CPU-only PyTorch. Trying with --no-cache-dir..."
+            if ! pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu; then
+                error "Failed to install CPU-only PyTorch"
+            fi
+        fi
         ;;
 esac
 
@@ -258,30 +266,6 @@ EOL
 
 # Make the main executable
 chmod +x "$APP_MAIN"
-
-# Create Info.plist
-cat > "$APP_CONTENTS/Info.plist" << 'EOL'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleExecutable</key>
-    <string>SONLab_FRET_Tool</string>
-    <key>CFBundleIconFile</key>
-    <string>AppIcon.icns</string>
-    <key>CFBundleIdentifier</key>
-    <string>org.sonlab.frettool</string>
-    <key>CFBundleName</key>
-    <string>SONLab FRET Tool</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>NSHighResolutionCapable</key>
-    <true/>
-    <key>NSRequiresAquaSystemAppearance</key>
-    <false/>
-</dict>
-</plist>
-EOL
 
 # Create Info.plist
 cat > "$APP_CONTENTS/Info.plist" << EOL
@@ -366,7 +350,8 @@ exec python -m GUI.main_gui "\$@"
 EOF
 
 # Make the launcher executable
-chmod +x "$PROJECT_ROOT/start_$APP_NAME.sh"
+# Make the launcher executable
+chmod +x "$PROJECT_ROOT/start_${APP_NAME// /_}.sh"
 
 # Finalize application bundle
 status "Finalizing $APP_NAME.app..."
@@ -402,53 +387,33 @@ if [ -d "$APP_PATH" ]; then
     echo "  1. Right-click the app in Finder"
     echo "  2. Select 'Open'"
     echo "  3. Click 'Open' in the security dialog"
-    echo -e "\n${YELLOW}Note:${NC} On first run, you may need to right-click the app and select 'Open' to bypass macOS security restrictions."
 else
     warning "Failed to create application bundle"
     status "You can still run the application using:"
     echo "  $PROJECT_ROOT/start_${APP_NAME// /_}.sh"
-    echo "  python -m GUI.main_gui"
+    echo "  $PYTHON_CMD -m GUI.main_gui"
 fi
 
-# No need for temporary GUI package, we're using the files in place
-import sys
-import os
-
-# Add the GUI package to the path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-# Import and run main
-try:
-    from GUI.main_gui import main
-    sys.exit(main())
-except ImportError as e:
-    print(f'Error importing main_gui: {e}')
-    import traceback
-    traceback.print_exc()
-    sys.exit(1)
-PYTHON_SCRIPT
-
-# Set up the Python path
-export PYTHONPATH="$TEMP_GUI_DIR:$SCRIPT_DIR"
-
-# Run the application using the virtual environment's Python
-exec "$SCRIPT_DIR/venv/bin/python" "$TEMP_GUI_DIR/run_app.py" "$@"
+# Create desktop shortcut
+DESKTOP_SHORTCUT="$HOME/Desktop/${APP_NAME}.desktop"
+cat > "$DESKTOP_SHORTCUT" << EOL
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=$APP_NAME
+Comment=FRET Analysis Tool
+Exec=$APP_PATH/Contents/MacOS/$APP_NAME
+Icon=$APP_PATH/Contents/Resources/AppIcon.icns
+Terminal=false
+Categories=Science;Biology;
 EOL
-
-chmod +x "$INSTALL_DIR/start_fret_tool.sh"
-
-# Create a desktop entry
-DESKTOP_ENTRY="$HOME/Desktop/SONLab FRET Tool"
-cat > "$DESKTOP_ENTRY" << 'EOL'
-#!/bin/bash
-open "$INSTALL_DIR/SONLab FRET Tool.app"
-EOL
-chmod +x "$DESKTOP_ENTRY"
+chmod +x "$DESKTOP_SHORTCUT"
 
 # Print completion message
 section "Installation Complete!"
-echo -e "${GREEN}SONLab FRET Tool has been successfully installed to:${NC}"
-echo -e "${BOLD}$INSTALL_DIR${NC}"
+echo -e "${GREEN}SONLab FRET Tool has been successfully installed!${NC}"
+echo -e "Application bundle: ${BOLD}$APP_PATH${NC}"
+echo -e "Launcher script:    ${BOLD}$PROJECT_ROOT/start_${APP_NAME// /_}.sh${NC}"
 echo ""
 echo -e "${GREEN}You can now run the application using one of these methods:${NC}"
 echo -e "1. Double-click the 'SONLab FRET Tool' app in your Applications folder"
