@@ -12,7 +12,7 @@ BLUE='\033[0;34m'
 APP_NAME="SONLab FRET Tool"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-INSTALL_DIR="$HOME/Applications/SONLab_FRET_Tool"
+INSTALL_DIR="$PROJECT_ROOT"
 VENV_DIR="$INSTALL_DIR/venv"
 
 # Function to display section headers
@@ -65,13 +65,53 @@ fi
 
 # Check for Python installation
 section "Checking Dependencies"
-status "Checking for Python 3.8 or later..."
-if ! command -v python3 >/dev/null 2>&1; then
-    error "Python 3 is not installed."
-    echo "Please install Python 3.8 or later using one of these methods:"
-    echo "  1. Download from https://www.python.org/downloads/"
-    echo "  2. Using Homebrew: brew install python@3.9"
+status "Checking for Python 3.10..."
+
+# Function to check if Python version is at least 3.10
+check_python_version() {
+    local python_cmd=$1
+    local version
+    version=$($python_cmd -c 'import sys; print(".".join(map(str, sys.version_info[:2])))' 2>/dev/null)
+    if [ $? -eq 0 ]; then
+        # Compare version numbers
+        if [ "$(printf '%s\n' "3.10" "$version" | sort -V | head -n1)" = "3.10" ]; then
+            return 0  # Python 3.10 or higher found
+        fi
+    fi
+    return 1  # Python 3.10+ not found
+}
+
+# Check for Python 3.10
+PYTHON_CMD="python3.10"
+if ! check_python_version "$PYTHON_CMD"; then
+    # Try with python3
+    PYTHON_CMD="python3"
+    if ! check_python_version "$PYTHON_CMD"; then
+        warning "Python 3.10+ is required but not found."
+        echo "Please install Python 3.10 using one of these methods:"
+        echo "  1. Download from https://www.python.org/downloads/macos/"
+        echo "  2. Using Homebrew: brew install python@3.10"
+        echo -n "Would you like to install Python 3.10 using Homebrew? [Y/n] "
+        read -r
+        if [ -z "$REPLY" ] || [[ "$REPLY" =~ ^[Yy] ]]; then
+            if ! command -v brew >/dev/null 2>&1; then
+                error "Homebrew is required to install Python 3.10. Please install Homebrew first."
+            fi
+            status "Installing Python 3.10 via Homebrew..."
+            brew install python@3.10 || error "Failed to install Python 3.10"
+            # Add Python 3.10 to PATH if needed
+            if [[ ":$PATH:" != *"/usr/local/opt/python@3.10/bin:"* ]]; then
+                echo 'export PATH="/usr/local/opt/python@3.10/bin:$PATH"' >> ~/.zshrc
+                export PATH="/usr/local/opt/python@3.10/bin:$PATH"
+            fi
+            PYTHON_CMD="python3.10"
+        else
+            error "Python 3.10 is required but not found. Please install it manually and try again."
+        fi
+    fi
 fi
+
+export PYTHON_CMD
 
 # Check for Homebrew and Xcode Command Line Tools
 status "Checking for required tools..."
@@ -122,17 +162,17 @@ fi
 
 # Create virtual environment
 section "Setting Up Python Environment"
-status "Creating Python virtual environment..."
+status "Creating Python virtual environment with Python 3.10..."
 if [ -d "$VENV_DIR" ]; then
     warning "Virtual environment already exists at $VENV_DIR"
     echo -n "Do you want to recreate it? [y/N] "
     read -r
     if [[ "$REPLY" =~ ^[Yy] ]]; then
         rm -rf "$VENV_DIR"
-        python3 -m venv "$VENV_DIR" || error "Failed to create virtual environment"
+        $PYTHON_CMD -m venv "$VENV_DIR" || error "Failed to create virtual environment with Python 3.10"
     fi
 else
-    python3 -m venv "$VENV_DIR" || error "Failed to create virtual environment"
+    $PYTHON_CMD -m venv "$VENV_DIR" || error "Failed to create virtual environment with Python 3.10"
 fi
 
 # Activate virtual environment
@@ -190,9 +230,12 @@ cp "$PROJECT_ROOT/"*.py "$APP_DIR/" 2>/dev/null || warning "No Python files foun
 
 # Handle application icon
 status "Creating application icon..."
-ICONSRC="$PROJECT_ROOT/logo.png"
+ICONSRC="$PROJECT_ROOT/GUI/logos/logo.png"
 ICONSET="$APP_DIR/icon.iconset"
 ICON_DEST="$APP_DIR/AppIcon.icns"
+
+# Create logos directory in app folder
+mkdir -p "$ICON_DIR" || warning "Failed to create icons directory"
 
 if [ -f "$ICONSRC" ]; then
     mkdir -p "$ICONSET" || warning "Failed to create iconset directory"
@@ -219,10 +262,18 @@ if [ -f "$ICONSRC" ]; then
     
     # Copy original icons
     cp "$ICONSRC" "$ICON_DIR/" || warning "Failed to copy logo.png"
-    [ -f "$PROJECT_ROOT/icon.png" ] && \
-        cp "$PROJECT_ROOT/icon.png" "$ICON_DIR/" 2>/dev/null || true
+    [ -f "$PROJECT_ROOT/GUI/logos/icon.png" ] && \
+        cp "$PROJECT_ROOT/GUI/logos/icon.png" "$ICON_DIR/" 2>/dev/null || true
+    [ -f "$PROJECT_ROOT/GUI/logos/icon.ico" ] && \
+        cp "$PROJECT_ROOT/GUI/logos/icon.ico" "$ICON_DIR/" 2>/dev/null || true
 else
-    warning "logo.png not found in project root, skipping icon creation"
+    warning "logo.png not found in GUI/logos directory, skipping icon creation"
+    # Try to find and copy any available icon
+    for icon in "$PROJECT_ROOT/GUI/logos/"*.{png,ico}; do
+        if [ -f "$icon" ]; then
+            cp "$icon" "$ICON_DIR/" && status "Copied $(basename "$icon") to icons directory"
+        fi
+    done
 fi
 
 # Copy LUT files
