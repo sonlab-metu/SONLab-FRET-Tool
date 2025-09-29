@@ -67,18 +67,30 @@ fi
 section "Checking Dependencies"
 status "Checking for Python 3.10..."
 
-# Function to check if Python version is at least 3.10
+# Function to check if Python version is exactly 3.10
 check_python_version() {
     local python_cmd=$1
     local version
     version=$($python_cmd -c 'import sys; print(".".join(map(str, sys.version_info[:2])))' 2>/dev/null)
-    if [ $? -eq 0 ]; then
-        # Compare version numbers
-        if [ "$(printf '%s\n' "3.10" "$version" | sort -V | head -n1)" = "3.10" ]; then
-            return 0  # Python 3.10 or higher found
-        fi
+    if [ $? -ne 0 ]; then
+        return 1  # Python command failed
     fi
-    return 1  # Python 3.10+ not found
+    
+    # Check if version is exactly 3.10
+    if [ "$version" = "3.10" ]; then
+        return 0  # Python 3.10 found
+    fi
+    
+    # Check if version is higher than 3.10
+    if [ "$(printf '%s\n' "3.10" "$version" | sort -V | head -n1)" = "3.10" ] && [ "$version" != "3.10" ]; then
+        error "Python version $version is too new. Only Python 3.10 is supported."
+        echo "Please install Python 3.10 using one of these methods:"
+        echo "  1. Download from https://www.python.org/downloads/macos/"
+        echo "  2. Using Homebrew: brew install python@3.10"
+        exit 1
+    fi
+    
+    return 1  # Python 3.10 not found
 }
 
 # Check for Python 3.10
@@ -87,7 +99,7 @@ if ! check_python_version "$PYTHON_CMD"; then
     # Try with python3
     PYTHON_CMD="python3"
     if ! check_python_version "$PYTHON_CMD"; then
-        warning "Python 3.10+ is required but not found."
+        warning "Python 3.10 is required but not found."
         echo "Please install Python 3.10 using one of these methods:"
         echo "  1. Download from https://www.python.org/downloads/macos/"
         echo "  2. Using Homebrew: brew install python@3.10"
@@ -107,8 +119,16 @@ if ! check_python_version "$PYTHON_CMD"; then
             PYTHON_CMD="python3.10"
         else
             error "Python 3.10 is required but not found. Please install it manually and try again."
+            exit 1
         fi
     fi
+fi
+
+# Verify we have exactly Python 3.10
+PYTHON_VERSION=$($PYTHON_CMD -c 'import sys; print(".".join(map(str, sys.version_info[:2])))')
+if [ "$PYTHON_VERSION" != "3.10" ]; then
+    error "Unexpected Python version $PYTHON_VERSION. Only Python 3.10 is supported."
+    exit 1
 fi
 
 export PYTHON_CMD
