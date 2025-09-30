@@ -15,7 +15,7 @@ SONLab FRET Analysis Tool is a comprehensive graphical application designed for 
 
 ## Features
 
-- **Bleed-Through Correction**: Accurate donor and acceptor bleed-through estimation
+- **Bleed-Through (Cross talk(orrection**: Accurate donor and acceptor bleed-through estimation
 - **Automated Segmentation**: Multiple thresholding methods and Cellpose integration
 - **Manual ROI Selection**: Interactive tools for precise region-of-interest selection
 - **FRET Analysis**: Comprehensive calculation of FRET efficiency and related metrics
