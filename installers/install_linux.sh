@@ -230,6 +230,7 @@ Type=Application
 Name=SONLab_FRET_Tool
 Comment=FRET_analysis_tool_for_microscopy
 Exec=$APP_DIR/start_fret_tool.sh
+Path=$APP_DIR/
 Icon=$APP_DIR/GUI/logos/icon.png
 Terminal=false
 Categories=Science
