@@ -290,10 +290,13 @@ function New-DesktopShortcut {
 Write-Section "SONLab FRET Tool Installer for Windows"
 
 # Get script and project directories
-$ScriptDir = $PSScriptRoot
-if (-not $ScriptDir) {
-    $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+try {
+    $ScriptPath = $MyInvocation.MyCommand.Definition
+    $ScriptDir = Split-Path -Parent $ScriptPath
+} catch {
+    $ScriptDir = Get-Location
 }
+
 
 $ProjectRoot = Split-Path -Parent $ScriptDir
 $VenvPath = Join-Path $ProjectRoot "venv"
