@@ -256,6 +256,9 @@ cat > "$APP_MAIN" << 'EOL'
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
+# Set working directory explicitly
+cd "$PROJECT_DIR" || exit 1
+
 # Check if virtual environment exists
 if [ ! -d "$PROJECT_DIR/venv" ]; then
     osascript -e 'display dialog "Error: Virtual environment not found at '$PROJECT_DIR/venv'" buttons {"OK"} default button 1 with icon stop'
