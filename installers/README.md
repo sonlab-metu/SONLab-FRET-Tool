@@ -7,7 +7,9 @@ This document provides detailed installation instructions for the SONLab FRET To
 ### All Systems
 - At least 8GB of free disk space
 - Stable internet connection
-- Python 3.8 or later (will be required for the installation)
+- **Python 3.10** (strictly required for dependency compatibility)
+  - Other Python versions, including newer ones, are not supported
+  - [Download Python 3.10.11](https://www.python.org/downloads/release/python-31011/)
 
 ## Installation Instructions
 
@@ -34,7 +36,11 @@ This document provides detailed installation instructions for the SONLab FRET To
    - Download the `SONLab-FRET-Tool` repository
    - Extract it to your desired location (e.g., `C:\Users\YourUsername\SONLab-FRET-Tool`)
 
-2. **Run the Installer**
+2. **Install Python 3.10 (if not already installed)**
+   - Download and install Python 3.10.11 from: [python.org/downloads/release/python-31011](https://www.python.org/downloads/release/python-31011/)
+   - During installation, make sure to check "Add Python 3.10 to PATH"
+
+3. **Run the Installer**
    - Open PowerShell as Administrator
    - Navigate to the installers directory:
      ```powershell
@@ -57,7 +63,23 @@ This document provides detailed installation instructions for the SONLab FRET To
    cd ~/SONLab-FRET-Tool/installers
    ```
 
-2. **Run the Installer**
+2. **Install Python 3.10 (if not already installed)**
+   - Debian/Ubuntu:
+     ```bash
+     sudo add-apt-repository ppa:deadsnakes/ppa
+     sudo apt update
+     sudo apt install python3.10 python3.10-venv python3.10-dev
+     ```
+   - Red Hat/CentOS:
+     ```bash
+     sudo dnf install python3.10 python3.10-devel
+     ```
+   - Arch Linux:
+     ```bash
+     sudo pacman -S python310 python-pip
+     ```
+
+3. **Run the Installer**
    ```bash
    ./install_linux.sh
    ```
@@ -76,7 +98,15 @@ This document provides detailed installation instructions for the SONLab FRET To
    cd ~/Applications/SONLab-FRET-Tool/installers
    ```
 
-2. **Run the Installer**
+2. **Install Python 3.10 (if not already installed)**
+   - Using Homebrew (recommended):
+     ```bash
+     brew install python@3.10
+     ```
+   - Or download from: [python.org/downloads/release/python-31011](https://www.python.org/downloads/release/python-31011/)
+   - Make sure Python 3.10 is in your PATH
+
+3. **Run the Installer**
    ```bash
    bash install_mac.sh
    ```
@@ -86,6 +116,13 @@ This document provides detailed installation instructions for the SONLab FRET To
 3. **First Run**
    - If you see a security warning, right-click the app and select "Open"
    - Then click "Open" in the security dialog
+
+## Important Notes
+
+### Python Version Requirement
+- **Python 3.10 is strictly required** for compatibility with all dependencies
+- Other Python versions, including newer ones, are not supported and may cause issues
+- The installer will verify Python 3.10 is installed before proceeding
 
 ## PyTorch Backend Selection
 

@@ -63,14 +63,46 @@ fi
 
 # Check for Python installation
 section "Checking Dependencies"
-status "Checking for Python 3.8 or later..."
-if ! command -v python3 >/dev/null 2>&1; then
-    error "Python 3 is not installed."
-    echo "Please install Python 3.8 or later using your distribution's package manager:"
-    echo "  Debian/Ubuntu: sudo apt update && sudo apt install python3 python3-venv python3-pip"
-    echo "  Red Hat/CentOS: sudo dnf install python3 python3-venv python3-pip"
-    echo "  Arch Linux: sudo pacman -S python python-pip"
+status "Checking for Python 3.10..."
+
+# Function to check Python version is exactly 3.10
+check_python_version() {
+    if command -v python3.10 >/dev/null 2>&1; then
+        PYTHON_CMD=python3.10
+        return 0
+    fi
+    
+    # Fallback to python3 if it's version 3.10
+    if command -v python3 >/dev/null 2>&1; then
+        python3 -c "import sys; sys.exit(0 if sys.version_info.major == 3 and sys.version_info.minor == 10 else 1)" && {
+            PYTHON_CMD=python3
+            return 0
+        }
+    fi
+    
+    return 1
+}
+
+if ! check_python_version; then
+    error "Python 3.10 is required but not found."
+    echo -e "\n${YELLOW}Installation instructions for Python 3.10:${NC}"
+    echo -e "${BOLD}Debian/Ubuntu:${NC}"
+    echo "  sudo add-apt-repository ppa:deadsnakes/ppa"
+    echo "  sudo apt update"
+    echo "  sudo apt install python3.10 python3.10-venv python3.10-dev"
+    echo -e "\n${BOLD}Red Hat/CentOS:${NC}"
+    echo "  sudo dnf install python3.10 python3.10-devel"
+    echo -e "\n${BOLD}Arch Linux:${NC}"
+    echo "  sudo pacman -S python310 python-pip"
+    echo -e "\nAfter installation, please run this script again."
+    echo -e "${YELLOW}Note:${NC} Python 3.10 is specifically required for dependency compatibility."
+    echo -e "      Other versions (including newer ones) may cause issues with dependencies.\n"
+    exit 1
 fi
+
+# Verify we have the right Python version
+PYTHON_VERSION=$($PYTHON_CMD --version 2>&1 | cut -d' ' -f2)
+status "Found Python $PYTHON_VERSION"
 
 # Check for required system packages
 status "Checking for required system packages..."
@@ -195,13 +227,13 @@ cat > "$DESKTOP_ENTRY" << EOL
 [Desktop Entry]
 Version=v2.0.2
 Type=Application
-Name=SONLab FRET Tool
-Comment=FRET analysis tool for microscopy
+Name=SONLab_FRET_Tool
+Comment=FRET_analysis_tool_for_microscopy
 Exec=$APP_DIR/start_fret_tool.sh
 Icon=$APP_DIR/GUI/logos/icon.png
 Terminal=false
-Categories=Science;Education;Biology;
-StartupWMClass=SONLab FRET Tool
+Categories=Science
+StartupWMClass=SONLab_FRET_Tool
 EOL
 
 # Make desktop entry executable

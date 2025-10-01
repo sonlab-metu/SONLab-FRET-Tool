@@ -5,7 +5,7 @@
   
   [![Version](https://img.shields.io/badge/version-v2.0.2-blue.svg)](https://sonlab-bio.metu.edu.tr)
   [![License](https://img.shields.io/badge/license-MIT-green.svg)](https://opensource.org/licenses/MIT)
-  [![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/)
+  [![Python](https://img.shields.io/badge/python-3.10-blue.svg)](https://www.python.org/downloads/release/python-31011/)
   [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)]()
 </div>
 
@@ -15,7 +15,7 @@ SONLab FRET Analysis Tool is a comprehensive graphical application designed for 
 
 ## Features
 
-- **Bleed-Through (Cross talk(orrection**: Accurate donor and acceptor bleed-through estimation
+- **Bleed-Through (Cross Talk) Correction**: Accurate donor and acceptor bleed-through estimation
 - **Automated Segmentation**: Multiple thresholding methods and Cellpose integration
 - **Manual ROI Selection**: Interactive tools for precise region-of-interest selection
 - **FRET Analysis**: Comprehensive calculation of FRET efficiency and related metrics
@@ -32,7 +32,7 @@ We provide two methods to install the SONLab FRET Tool:
 
 For automated installation with desktop integration, please refer to the installation scripts in the `installers/` directory:
 
-- Windows: Run `installers/install_windows.ps1`
+- Windows: Run `installers/install_windows.bat`
 - Linux: Run `installers/install_linux.sh`
 - macOS: Run `installers/install_mac.sh`
 
@@ -45,7 +45,10 @@ For advanced users who prefer manual setup:
 #### Prerequisites
 
 **All Platforms:**
-- Python 3.8 or later
+- Python 3.10 (required for dependency compatibility)
+  - Download: [Python 3.10.11](https://www.python.org/downloads/release/python-31011/)
+  - During installation, make sure to select "Add Python to PATH"
+  - Note: Other Python versions (including newer ones) are not supported due to dependency constraints
 - pip (Python package manager)
 - Git (or download the repository as ZIP)
 - At least 8 GB of free disk space
