@@ -1,9 +1,10 @@
 ---
 name: "✨ Feature Request"
 about: Suggest an idea or enhancement for SONLab FRET Tool
-title: '[ENH] '
-labels: 'enhancement'
-assignees: ''
+title: "[ENH] "
+labels: enhancement
+assignees: Cagdason, aznursoy, orkvn
+
 ---
 
 ## 🚀 Feature Request
