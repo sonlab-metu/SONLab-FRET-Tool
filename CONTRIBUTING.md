@@ -46,7 +46,7 @@ This project and everyone participating in it are governed by our [Code of Condu
 1. Clone the repository
 2. Run the setup script:
    ```powershell
-   .\installers\windows_installer.ps1
+   .\installers\install_windows.ps1
    ```
    This will set up a virtual environment and install all dependencies.
 
