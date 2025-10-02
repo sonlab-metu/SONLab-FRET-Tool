@@ -1,9 +1,10 @@
 ---
-name: "🐞 Bug Report"
+name: "\U0001F41E Bug Report"
 about: Report a bug or unexpected behavior in SONLab FRET Tool
-title: '[BUG] '
-labels: 'bug'
-assignees: ''
+title: "[BUG] "
+labels: bug
+assignees: aznursoy, sonlab-metu
+
 ---
 
 ## 🐞 Bug Description
