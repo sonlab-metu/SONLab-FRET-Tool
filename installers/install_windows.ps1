@@ -7,7 +7,7 @@ param(
     [switch]$Silent,
     
     [Parameter()]
-    [ValidateSet('cuda118', 'cuda126', 'cpu')]
+    [ValidateSet('cuda126', 'cuda128', 'cuda129', 'cpu')]
     [string]$PyTorchBackend = 'cpu'
 )
 
@@ -182,18 +182,24 @@ function Install-PyTorch {
         [string]$Backend = 'cpu'
     )
     
-    $pipPath = Join-Path $VenvPath "Scripts\pip.exe"
+    $pipPath = Join-Path $VenvPath "Scripts\pip3.exe"
     
     Write-Status "Installing PyTorch with $Backend backend..."
     
-    $torchUrl = switch ($Backend.ToLower()) {
-        'cuda118' { "https://download.pytorch.org/whl/cu118" }
+    $installArgs = "install torch torchvision"
+    $indexUrl = switch ($Backend.ToLower()) {
         'cuda126' { "https://download.pytorch.org/whl/cu126" }
-        default { "https://download.pytorch.org/whl/cpu" }
+        'cuda128' { "https://download.pytorch.org/whl/cu128" }
+        'cuda129' { "https://download.pytorch.org/whl/cu129" }
+        default { "" } # CPU
+    }
+
+    if ($indexUrl) {
+        $installArgs += " --index-url $indexUrl"
     }
     
     try {
-        & $pipPath install torch torchvision torchaudio --index-url $torchUrl
+        Invoke-Expression "& '$pipPath' $installArgs"
         if ($LASTEXITCODE -ne 0) {
             throw "PyTorch installation failed"
         }
@@ -330,14 +336,16 @@ if (-not (Install-PythonDependencies -VenvPath $VenvPath -RequirementsFile $Requ
 if (-not $Silent) {
     Write-Section "PyTorch Backend Selection"
     Write-Host "Select the PyTorch backend to install:"
-    Write-Host "  1) CUDA 11.8 (NVIDIA GPUs)"
-    Write-Host "  2) CUDA 12.6 (NVIDIA GPUs, newer)"
-    Write-Host "  3) CPU only (no GPU acceleration, recommended)"
+    Write-Host "  1) CUDA 12.6 (NVIDIA GPUs)"
+    Write-Host "  2) CUDA 12.8 (NVIDIA GPUs)"
+    Write-Host "  3) CUDA 12.9 (NVIDIA GPUs, newer)"
+    Write-Host "  4) CPU only (no GPU acceleration)"
     
-    $choice = Read-Host "`nEnter your choice (1-3, default is 3)"
+    $choice = Read-Host "`nEnter your choice (1-4, default is 4)"
     $PyTorchBackend = switch ($choice) {
-        '1' { 'cuda118' }
-        '2' { 'cuda126' }
+        '1' { 'cuda126' }
+        '2' { 'cuda128' }
+        '3' { 'cuda129' }
         default { 'cpu' }
     }
 }
@@ -351,7 +359,6 @@ if (-not (Install-PyTorch -VenvPath $VenvPath -Backend $PyTorchBackend)) {
 }
 
 # Create launcher script
-Write-Section "Creating Launcher"
 $launcherPath = New-LauncherScript -ProjectRoot $ProjectRoot
 if (-not $launcherPath) {
     Exit-WithError "Failed to create launcher script."
