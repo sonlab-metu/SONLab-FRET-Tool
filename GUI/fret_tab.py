@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (
     QTabWidget, QApplication, QComboBox, QLineEdit, QButtonGroup, QRadioButton, QScrollArea, QGridLayout,
     QSplitter, QSpinBox, QColorDialog, QScrollArea, QSizePolicy, QProgressDialog
 )
-from PyQt5.QtGui import QColor
+from PyQt5.QtGui import QColor, QIcon
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -769,11 +769,11 @@ class FretTab(QWidget):
             legend_handles.append(plt.Rectangle((0, 0), 0.8, 0.8, fc=color, ec='black', linewidth=0.5, alpha=0.5))
             legend_labels.append(f'{group}: {mean_val:.1f}% (n={n_points}, C={compactness:.1f})')
         
-        # Add legend below the plot
+        # Add legend above the plot
         legend = ax.legend(legend_handles, legend_labels, 
-                         loc='upper center',
-                         bbox_to_anchor=(0.5, -0.15),  # Below the plot
-                         ncol=min(4, len(legend_labels)),  # Maximum 4 columns
+                         loc='upper left',
+                         bbox_to_anchor=((1.05, 1)),  # Above the plot
+                         ncol=min(2, len(legend_labels)),  # Maximum 2 columns
                          frameon=True,
                          framealpha=0.9,
                          fancybox=True,
@@ -784,12 +784,26 @@ class FretTab(QWidget):
                          columnspacing=0.8,
                          fontsize='small')
         
-        # Adjust layout to make room for legend below
-        new_fig.tight_layout(rect=[0, 0.05, 1, 0.95])  # Leave space at bottom for legend
+        # Adjust layout to make room for legend above
+        new_fig.tight_layout(rect=[0, 0, 1, 0.95])  # Leave space at top for legend
         
         # Set up the rest of the UI
         toolbar = NavigationToolbar(canvas, dlg)
-        container_layout.addWidget(toolbar)
+        
+        # Create a horizontal layout for toolbar and save button
+        toolbar_layout = QHBoxLayout()
+        toolbar_layout.addWidget(toolbar)
+        
+        # Add save button
+        save_btn = QPushButton("Save Plot")
+        save_btn.setToolTip("Save the current plot to a file")
+        save_btn.setIcon(QIcon(resource_path("icons/save.png")))  # Using the same save icon as the main UI
+        save_btn.clicked.connect(lambda: self.save_plot(new_fig, "aggregate_boxplot"))
+        toolbar_layout.addWidget(save_btn)
+        toolbar_layout.addStretch()
+        
+        # Add toolbar layout and canvas to container
+        container_layout.addLayout(toolbar_layout)
         container_layout.addWidget(canvas)
         scroll.setWidget(container)
         layout.addWidget(scroll)
