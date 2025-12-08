@@ -377,12 +377,21 @@ class FretTab(QWidget):
         try:
             if not file_path.lower().endswith('.csv'):
                 file_path += '.csv'
-            with open(file_path, 'w', newline='') as csvfile:
+            with open(file_path, 'w', newline='', encoding='utf-8-sig') as csvfile:
                 writer = csv.writer(csvfile)
-                header = [table.horizontalHeaderItem(col).text() for col in range(table.columnCount())]
+                # Get header text, ensuring we handle non-ASCII characters
+                header = []
+                for col in range(table.columnCount()):
+                    header_item = table.horizontalHeaderItem(col)
+                    header_text = header_item.text() if header_item else f"Column {col+1}"
+                    header.append(header_text)
                 writer.writerow(header)
+                # Write data rows
                 for row in range(table.rowCount()):
-                    row_data = [table.item(row, col).text() if table.item(row, col) else "" for col in range(table.columnCount())]
+                    row_data = []
+                    for col in range(table.columnCount()):
+                        item = table.item(row, col)
+                        row_data.append(item.text() if item and item.text() else "")
                     writer.writerow(row_data)
             QMessageBox.information(self, "Export Successful", f"Summary data exported to:\n{file_path}")
         except Exception as e:
@@ -2957,17 +2966,24 @@ class FretTab(QWidget):
         try:
             if not file_path.lower().endswith('.csv'):
                 file_path += '.csv'
-            with open(file_path, 'w', newline='') as csvfile:
+            with open(file_path, 'w', newline='', encoding='utf-8-sig') as csvfile:
                 writer = csv.writer(csvfile)
+                # Create header row with proper encoding
                 header = ['Efficiency (%)']
                 for group in self.last_histogram_data.keys():
                     header.extend([f'{group} Mean %', f'{group} SEM'])
                 writer.writerow(header)
+                
+                # Write data rows with proper number formatting
                 for i in range(len(self.last_histogram_data[list(self.last_histogram_data.keys())[0]][0])):
+                    # Get the efficiency value for this row
                     row = [f"{self.last_histogram_data[list(self.last_histogram_data.keys())[0]][0][i]:.2f}"]
+                    
+                    # Add mean and SEM for each group
                     for group in self.last_histogram_data.keys():
                         centers, means, sems = self.last_histogram_data[group]
                         row.extend([f"{means[i]:.4f}", f"{sems[i]:.4f}"])
+                    
                     writer.writerow(row)
             QMessageBox.information(self, "Export Successful", f"Aggregate histogram data exported to:\n{file_path}")
         except Exception as e:

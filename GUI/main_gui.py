@@ -21,7 +21,7 @@ try:
     from GUI.cellpose_segmentation_tab import CellposeSegmentationTab
     from GUI.config_manager import ConfigManager
 
-except ImportError or ModuleNotFoundError:
+except (ImportError, ModuleNotFoundError):
     # Fallback for direct script execution
     from bt_tab import BleedThroughTab
     from fret_tab import FretTab
