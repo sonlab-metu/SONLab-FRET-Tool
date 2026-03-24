@@ -56,6 +56,8 @@ class FretTab(QWidget):
         self.current_cell_id = None  # Track currently selected cell ID
         self.current_cell_mask = None  # Track currently selected cell mask
         self.distribution_enabled = True  # Track distribution analysis state
+        self.dfret_E = None
+        self.dfret_C1 = None
         self.initUI()
         self.setAcceptDrops(True)
         self.update_tab_state(False)
@@ -1251,7 +1253,8 @@ class FretTab(QWidget):
             "FRET/Acceptor": QCheckBox("FRET/Acceptor"),
             "Xia": QCheckBox("Xia et al. (FRET/sqrt(D*A))"),
             "Gordon": QCheckBox("Gordon et al. (FRET/(D*A))"),
-            "PixFRET": QCheckBox("PixFRET (FRET/(D+FRET))")
+            "PixFRET": QCheckBox("PixFRET (FRET/(D+FRET))"),
+            "DFRET": QCheckBox("DFRET (advanced normalization)")
         }
         for name, checkbox in self.formula_checkboxes.items():
             checked = True if self.config is None else self.config.get(f'fret.formulas.{name}', True)
@@ -1262,6 +1265,49 @@ class FretTab(QWidget):
             formula_layout.addWidget(checkbox)
         self.formula_group.setLayout(formula_layout)
         left_layout.addWidget(self.formula_group)
+
+        self.dfret_group = QGroupBox("DFRET Calibration")
+        dfret_layout = QFormLayout()
+
+        self.dfret_e_spinbox = QDoubleSpinBox()
+        self.dfret_e_spinbox.setRange(0.0, 1.0)
+        self.dfret_e_spinbox.setSingleStep(0.01)
+        self.dfret_e_spinbox.setDecimals(4)
+        default_dfret_e = None if self.config is None else self.config.get('fret.dfret_e', None)
+        if default_dfret_e is not None:
+            try:
+                default_dfret_e = float(default_dfret_e)
+            except Exception:
+                default_dfret_e = None
+        if default_dfret_e is not None and np.isfinite(default_dfret_e):
+            self.dfret_e_spinbox.setValue(max(0.0, min(1.0, default_dfret_e)))
+            self.dfret_E = float(self.dfret_e_spinbox.value())
+
+        self.dfret_e_spinbox.valueChanged.connect(self._on_dfret_e_changed)
+        self.add_info_icon(dfret_layout, "E (photobleaching):", self.dfret_e_spinbox, "Photobleaching-derived FRET efficiency (0-1) from a donor-acceptor fusion construct.")
+
+        self.dfret_c1_label = QLabel("N/A")
+        default_dfret_c1 = None if self.config is None else self.config.get('fret.dfret_c1', None)
+        if default_dfret_c1 is not None:
+            try:
+                default_dfret_c1 = float(default_dfret_c1)
+            except Exception:
+                default_dfret_c1 = None
+        if default_dfret_c1 is not None and np.isfinite(default_dfret_c1) and default_dfret_c1 > 0:
+            self.dfret_C1 = float(default_dfret_c1)
+            self.dfret_c1_label.setText(f"{self.dfret_C1:.6g}")
+        self.add_info_icon(dfret_layout, "C1:", self.dfret_c1_label, "Donor normalization factor C1 computed from fusion construct (Eq. 6 in Hochreiter et al.).")
+
+        self.dfret_compute_c1_button = QPushButton("Compute C1 from Selected Image")
+        self.dfret_compute_c1_button.clicked.connect(self.compute_dfret_c1_from_selected_image)
+        dfret_layout.addRow(self.dfret_compute_c1_button)
+
+        self.dfret_group.setLayout(dfret_layout)
+        left_layout.addWidget(self.dfret_group)
+
+        if "DFRET" in self.formula_checkboxes:
+            self.formula_checkboxes["DFRET"].stateChanged.connect(self._update_dfret_controls_enabled)
+            self._update_dfret_controls_enabled()
 
         self.analysis_group = QGroupBox("Analysis")
         analysis_layout = QVBoxLayout()
@@ -1963,6 +2009,31 @@ class FretTab(QWidget):
         if not self.image_paths:
             QMessageBox.warning(self, "No Images", "Please add images to analyze.")
             return
+
+        if "DFRET" in self.formula_checkboxes and self.formula_checkboxes["DFRET"].isChecked():
+            if self.dfret_E is None or self.dfret_E <= 0:
+                QMessageBox.warning(self, "DFRET requires E", "DFRET is enabled. Please enter a photobleaching-derived E value (> 0) to proceed.")
+                return
+            if self.dfret_C1 is None or not np.isfinite(self.dfret_C1) or self.dfret_C1 <= 0:
+                calib_path = None
+                current_item = self.image_list_widget.currentItem() if hasattr(self, 'image_list_widget') else None
+                if current_item is not None:
+                    calib_path = self.image_paths[self.image_list_widget.row(current_item)]
+                elif self.image_paths:
+                    calib_path = self.image_paths[0]
+
+                if calib_path is None:
+                    QMessageBox.warning(self, "DFRET requires C1", "DFRET is enabled but C1 is not available. Select a fusion-construct image and compute C1.")
+                    return
+
+                try:
+                    self.compute_dfret_c1_from_image(calib_path)
+                except Exception as e:
+                    QMessageBox.critical(self, "DFRET C1 Error", f"Failed to compute C1 for DFRET from selected image: {e}")
+                    return
+                if self.dfret_C1 is None or not np.isfinite(self.dfret_C1) or self.dfret_C1 <= 0:
+                    QMessageBox.warning(self, "DFRET requires C1", "DFRET is enabled but C1 could not be computed. Please verify the calibration image and E value.")
+                    return
         if self.analyze_all_checkbox.isChecked():
             image_paths_to_process = self.image_paths
         else:
@@ -2186,7 +2257,65 @@ class FretTab(QWidget):
             elif formula_name == "PixFRET":
                 denominator = d + f
                 efficiency = np.divide(f, denominator, out=np.zeros_like(f, dtype=float), where=denominator!=0)
+            elif formula_name == "DFRET":
+                if self.dfret_C1 is None or not np.isfinite(self.dfret_C1) or self.dfret_C1 <= 0:
+                    efficiency = np.zeros_like(f, dtype=float)
+                else:
+                    denom = (self.dfret_C1 * d) + f
+                    efficiency = np.divide(f, denom, out=np.zeros_like(f, dtype=float), where=denom!=0)
         return efficiency * 100
+
+    def compute_dfret_c1_from_image(self, file_path):
+        if self.dfret_E is None or self.dfret_E <= 0:
+            raise ValueError("E must be > 0")
+
+        labels, fret, donor, acceptor, _, _ = self.load_and_prepare_image(file_path)
+        if donor is None or fret is None or labels is None:
+            raise ValueError("Invalid calibration image")
+
+        E = float(self.dfret_E)
+        mask = (labels > 0) & np.isfinite(fret) & np.isfinite(donor) & (donor > 0) & (fret > 0)
+        if not np.any(mask):
+            raise ValueError("No valid pixels to compute C1")
+
+        c1_map = np.divide(fret[mask] * (1.0 - E), (E * donor[mask]), out=np.full_like(fret[mask], np.nan, dtype=float), where=(donor[mask] != 0))
+        c1_map = c1_map[np.isfinite(c1_map) & (c1_map > 0)]
+        if c1_map.size == 0:
+            raise ValueError("C1 computation produced no valid values")
+
+        self.dfret_C1 = float(np.median(c1_map))
+        if hasattr(self, 'dfret_c1_label'):
+            self.dfret_c1_label.setText(f"{self.dfret_C1:.6g}")
+        if self.config is not None:
+            self.config.set('fret.dfret_c1', float(self.dfret_C1))
+
+    def compute_dfret_c1_from_selected_image(self):
+        current_item = self.image_list_widget.currentItem() if hasattr(self, 'image_list_widget') else None
+        if current_item is None:
+            QMessageBox.warning(self, "No Selection", "Please select a fusion-construct image to compute C1.")
+            return
+        file_path = self.image_paths[self.image_list_widget.row(current_item)]
+        try:
+            self.compute_dfret_c1_from_image(file_path)
+            QMessageBox.information(self, "DFRET C1", f"Computed C1: {self.dfret_C1:.6g}")
+        except Exception as e:
+            QMessageBox.critical(self, "DFRET C1 Error", f"Failed to compute C1 from selected image: {e}")
+
+    def _on_dfret_e_changed(self, value):
+        self.dfret_E = float(value)
+        self.dfret_C1 = None
+        if hasattr(self, 'dfret_c1_label'):
+            self.dfret_c1_label.setText("N/A")
+        if self.config is not None:
+            self.config.set('fret.dfret_e', float(self.dfret_E))
+            self.config.set('fret.dfret_c1', None)
+
+    def _update_dfret_controls_enabled(self, *_):
+        enabled = False
+        if "DFRET" in self.formula_checkboxes:
+            enabled = self.formula_checkboxes["DFRET"].isChecked()
+        if hasattr(self, 'dfret_group'):
+            self.dfret_group.setEnabled(enabled)
 
     def export_histogram_data(self):
         if not hasattr(self, 'current_hist_data'):
