@@ -49,6 +49,11 @@ class FretTab(QWidget):
         self.donor_coeffs = None
         self.acceptor_model = None
         self.acceptor_coeffs = None
+        self.s3_model = None
+        self.s3_coeffs = None
+        self.s4_model = None
+        self.s4_coeffs = None
+        self.s3_s4_enabled = False
         self.analysis_results = {}
         self.image_groups = {}
         self.ramps_colormap = self.load_ramps_colormap()
@@ -1135,10 +1140,12 @@ class FretTab(QWidget):
         self.donor_coeffs_label = QLabel("N/A")
         self.acceptor_model_label = QLabel("N/A")
         self.acceptor_coeffs_label = QLabel("N/A")
+        self.s3_s4_status_label = QLabel("Disabled")
         params_layout.addRow("Donor (S1) Model:", self.donor_model_label)
         params_layout.addRow("Donor (S1) Coeffs:", self.donor_coeffs_label)
         params_layout.addRow("Acceptor (S2) Model:", self.acceptor_model_label)
         params_layout.addRow("Acceptor (S2) Coeffs:", self.acceptor_coeffs_label)
+        params_layout.addRow("S3 & S4 Correction:", self.s3_s4_status_label)
         self.params_group.setLayout(params_layout)
         left_layout.addWidget(self.params_group)
 
@@ -1934,6 +1941,11 @@ class FretTab(QWidget):
         self.donor_coeffs = None
         self.acceptor_model = None
         self.acceptor_coeffs = None
+        self.s3_model = None
+        self.s3_coeffs = None
+        self.s4_model = None
+        self.s4_coeffs = None
+        self.s3_s4_enabled = False
         self.image_paths.clear()
         self.image_list_widget.clear()
         self.analysis_results.clear()
@@ -1941,20 +1953,36 @@ class FretTab(QWidget):
         self.donor_coeffs_label.setText("N/A")
         self.acceptor_model_label.setText("N/A")
         self.acceptor_coeffs_label.setText("N/A")
+        self.s3_s4_status_label.setText("Disabled")
+        self.s3_s4_status_label.setStyleSheet("")
         self.figure.clear()
         self.current_stats_table.setRowCount(0)
         self.aggregate_stats_table.setRowCount(0)
         self.canvas.draw()
 
-    def set_correction_parameters(self, donor_model, donor_coeffs, acceptor_model, acceptor_coeffs):
+    def set_correction_parameters(self, donor_model, donor_coeffs, acceptor_model, acceptor_coeffs,
+                                  s3_model=None, s3_coeffs=None, s4_model=None, s4_coeffs=None, s3_s4_enabled=False):
         self.donor_model = donor_model
         self.donor_coeffs = donor_coeffs
         self.acceptor_model = acceptor_model
         self.acceptor_coeffs = acceptor_coeffs
+        self.s3_model = s3_model
+        self.s3_coeffs = s3_coeffs
+        self.s4_model = s4_model
+        self.s4_coeffs = s4_coeffs
+        self.s3_s4_enabled = s3_s4_enabled
         self.donor_model_label.setText(f"<b>{donor_model}</b>")
         self.donor_coeffs_label.setText(str(np.round(self.donor_coeffs, 4)))
         self.acceptor_model_label.setText(f"<b>{acceptor_model}</b>")
         self.acceptor_coeffs_label.setText(str(np.round(self.acceptor_coeffs, 4)))
+        
+        if self.s3_s4_enabled:
+            self.s3_s4_status_label.setText("<b>Enabled</b>")
+            self.s3_s4_status_label.setStyleSheet("color: green;")
+        else:
+            self.s3_s4_status_label.setText("Disabled")
+            self.s3_s4_status_label.setStyleSheet("")
+            
         QMessageBox.information(self, "Parameters Received", "Bleed-through parameters have been successfully transferred.")
 
     def pixfret_threshold(self, donor_image: np.ndarray, acceptor_image: np.ndarray, bg_donor: float, bg_acceptor: float, threshold_factor: float = 1.0, use_local_averaging: bool = True) -> np.ndarray:
@@ -2216,6 +2244,24 @@ class FretTab(QWidget):
         donor_channel, bg_donor = self.subtract_background(donor_channel)
         acceptor_channel, bg_acceptor = self.subtract_background(acceptor_channel)
         fret_channel, _ = self.subtract_background(fret_channel)
+        
+        # Apply S3 and S4 cross-talk correction (Equations 13 and 14)
+        if self.s3_s4_enabled and image_data.shape[0] >= 4:
+            s3_ratio = self.get_ratio(donor_channel, self.s3_model, self.s3_coeffs)
+            s4_ratio = self.get_ratio(acceptor_channel, self.s4_model, self.s4_coeffs)
+            
+            denom = 1 - s3_ratio * s4_ratio
+            denom[denom == 0] = 1.0  # Safe denominator
+            
+            corrected_donor = (donor_channel - s4_ratio * acceptor_channel) / denom
+            corrected_acceptor = (acceptor_channel - s3_ratio * donor_channel) / denom
+            
+            corrected_donor[corrected_donor < 0] = 0
+            corrected_acceptor[corrected_acceptor < 0] = 0
+            
+            donor_channel = corrected_donor
+            acceptor_channel = corrected_acceptor
+
         donor_bleed = self.apply_correction(donor_channel, self.donor_model, self.donor_coeffs)
         acceptor_bleed = self.apply_correction(acceptor_channel, self.acceptor_model, self.acceptor_coeffs)
         corrected_fret = fret_channel - donor_bleed - acceptor_bleed
@@ -2230,6 +2276,15 @@ class FretTab(QWidget):
         elif model == 'Exponential':
             return image * (coeffs[0] * np.exp(-coeffs[1] * image) + coeffs[2])
         return np.zeros_like(image)
+        
+    def get_ratio(self, image, model, coeffs):
+        if model == 'Constant':
+            return np.full_like(image, coeffs, dtype=float)
+        elif model == 'Linear':
+            return coeffs[0] * image + coeffs[1]
+        elif model == 'Exponential':
+            return coeffs[0] * np.exp(-coeffs[1] * image) + coeffs[2]
+        return np.zeros_like(image, dtype=float)
 
     def subtract_background(self, image, kernel_size=None):
         if kernel_size is None:

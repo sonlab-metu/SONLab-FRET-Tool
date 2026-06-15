@@ -73,7 +73,7 @@ class AnalysisChannelTab(QWidget):
         settings_layout = QVBoxLayout(settings_widget)
         settings_widget.setFixedWidth(300)
 
-        if self.channel_name == 'S1':
+        if self.channel_name in ['S1', 'S3']:
             group_title = "Donor-Only Samples"
         else:
             group_title = "Acceptor-Only Samples"
@@ -448,13 +448,21 @@ class AnalysisChannelTab(QWidget):
             self.ax.callbacks.connect('ylim_changed', self.on_zoom_pan)
 
             if self.channel_name == 'S1':
-                d_intensity, s1 = process_donor_only_samples(self.image_paths, self.sigma_spin.value())
-                self.results = {'d_intensity': d_intensity, 's1': s1}
-                self.fit_results = fit_and_plot(d_intensity, s1, 'Donor Intensity', 'S1 Ratio', 'S1 vs Donor', self.ax, self.sampling_check.isChecked(), self.sample_size_spin.value())
-            else:
-                a_intensity, s2 = process_acceptor_only_samples(self.image_paths, self.sigma_spin.value())
-                self.results = {'a_intensity': a_intensity, 's2': s2}
-                self.fit_results = fit_and_plot(a_intensity, s2, 'Acceptor Intensity', 'S2 Ratio', 'S2 vs Acceptor', self.ax, self.sampling_check.isChecked(), self.sample_size_spin.value())
+                d_intensity, ratio = process_donor_only_samples(self.image_paths, self.sigma_spin.value(), channel='S1')
+                self.results = {'d_intensity': d_intensity, 's1': ratio}
+                self.fit_results = fit_and_plot(d_intensity, ratio, 'Donor Intensity', 'S1 Ratio', 'S1 vs Donor', self.ax, self.sampling_check.isChecked(), self.sample_size_spin.value())
+            elif self.channel_name == 'S3':
+                d_intensity, ratio = process_donor_only_samples(self.image_paths, self.sigma_spin.value(), channel='S3')
+                self.results = {'d_intensity': d_intensity, 's3': ratio}
+                self.fit_results = fit_and_plot(d_intensity, ratio, 'Donor Intensity', 'S3 Ratio', 'S3 vs Donor', self.ax, self.sampling_check.isChecked(), self.sample_size_spin.value())
+            elif self.channel_name == 'S2':
+                a_intensity, ratio = process_acceptor_only_samples(self.image_paths, self.sigma_spin.value(), channel='S2')
+                self.results = {'a_intensity': a_intensity, 's2': ratio}
+                self.fit_results = fit_and_plot(a_intensity, ratio, 'Acceptor Intensity', 'S2 Ratio', 'S2 vs Acceptor', self.ax, self.sampling_check.isChecked(), self.sample_size_spin.value())
+            elif self.channel_name == 'S4':
+                a_intensity, ratio = process_acceptor_only_samples(self.image_paths, self.sigma_spin.value(), channel='S4')
+                self.results = {'a_intensity': a_intensity, 's4': ratio}
+                self.fit_results = fit_and_plot(a_intensity, ratio, 'Acceptor Intensity', 'S4 Ratio', 'S4 vs Acceptor', self.ax, self.sampling_check.isChecked(), self.sample_size_spin.value())
             
             self.ax.set_ylim(0,1)
             self.figure.tight_layout()
@@ -462,10 +470,10 @@ class AnalysisChannelTab(QWidget):
             self.update_coefficient_display()
             self.notify_if_fit_unavailable()
             # Set default threshold spinboxes to full data ranges
-            if self.channel_name == 'S1':
-                xdata, ydata = self.results['d_intensity'], self.results['s1']
+            if self.channel_name in ['S1', 'S3']:
+                xdata, ydata = self.results['d_intensity'], self.results[self.channel_name.lower()]
             else:
-                xdata, ydata = self.results['a_intensity'], self.results['s2']
+                xdata, ydata = self.results['a_intensity'], self.results[self.channel_name.lower()]
             if len(xdata) and len(ydata):
                 self.xmin_spin.setValue(float(np.min(xdata)))
                 self.xmax_spin.setValue(float(np.max(xdata)))
@@ -487,12 +495,12 @@ class AnalysisChannelTab(QWidget):
 
         xlim, ylim = self.ax.get_xlim(), self.ax.get_ylim()
 
-        if self.channel_name == 'S1':
-            x_full, y_full = self.results.get('d_intensity'), self.results.get('s1')
-            x_label, y_label, title = 'Donor Intensity', 'S1 Ratio', 'S1 vs Donor'
+        if self.channel_name in ['S1', 'S3']:
+            x_full, y_full = self.results.get('d_intensity'), self.results.get(self.channel_name.lower())
+            x_label, y_label, title = 'Donor Intensity', f'{self.channel_name} Ratio', f'{self.channel_name} vs Donor'
         else:
-            x_full, y_full = self.results.get('a_intensity'), self.results.get('s2')
-            x_label, y_label, title = 'Acceptor Intensity', 'S2 Ratio', 'S2 vs Acceptor'
+            x_full, y_full = self.results.get('a_intensity'), self.results.get(self.channel_name.lower())
+            x_label, y_label, title = 'Acceptor Intensity', f'{self.channel_name} Ratio', f'{self.channel_name} vs Acceptor'
 
         if x_full is None or y_full is None:
             return
@@ -687,12 +695,12 @@ class AnalysisChannelTab(QWidget):
         if not self.results:
             self.show_status("Please run analysis first.", 'red'); return
 
-        if self.channel_name == 'S1':
-            x_full, y_full = self.results['d_intensity'], self.results['s1']
-            x_label, y_label, title = 'Donor Intensity', 'S1 Ratio', 'S1 vs Donor'
+        if self.channel_name in ['S1', 'S3']:
+            x_full, y_full = self.results['d_intensity'], self.results[self.channel_name.lower()]
+            x_label, y_label, title = 'Donor Intensity', f'{self.channel_name} Ratio', f'{self.channel_name} vs Donor'
         else:
-            x_full, y_full = self.results['a_intensity'], self.results['s2']
-            x_label, y_label, title = 'Acceptor Intensity', 'S2 Ratio', 'S2 vs Acceptor'
+            x_full, y_full = self.results['a_intensity'], self.results[self.channel_name.lower()]
+            x_label, y_label, title = 'Acceptor Intensity', f'{self.channel_name} Ratio', f'{self.channel_name} vs Acceptor'
 
         xmin, xmax = self.xmin_spin.value(), self.xmax_spin.value()
         ymin, ymax = self.ymin_spin.value(), self.ymax_spin.value()
@@ -759,9 +767,13 @@ class BleedThroughTab(QWidget):
         self.config = config_manager
         self.donor_tab = AnalysisChannelTab('S1', self.config, self)
         self.acceptor_tab = AnalysisChannelTab('S2', self.config, self)
+        self.s3_tab = AnalysisChannelTab('S3', self.config, self)
+        self.s4_tab = AnalysisChannelTab('S4', self.config, self)
         self.initUI()
         self.donor_tab.fit_confirmation_signal.connect(self.check_confirmation_status)
         self.acceptor_tab.fit_confirmation_signal.connect(self.check_confirmation_status)
+        self.s3_tab.fit_confirmation_signal.connect(self.check_confirmation_status)
+        self.s4_tab.fit_confirmation_signal.connect(self.check_confirmation_status)
         
         # Connect theme changed signal from parent if available
         if parent and hasattr(parent, 'theme_changed'):
@@ -773,10 +785,22 @@ class BleedThroughTab(QWidget):
 
     def initUI(self):
         main_layout = QVBoxLayout(self)
-        tabs = QTabWidget()
-        tabs.addTab(self.donor_tab, "Donor (S1)")
-        tabs.addTab(self.acceptor_tab, "Acceptor (S2)")
-        main_layout.addWidget(tabs)
+        
+        self.s3_s4_checkbox = QCheckBox("Enable S3 & S4 Calculations (Requires 4-frame images)")
+        self.s3_s4_checkbox.toggled.connect(self.toggle_s3_s4)
+        main_layout.addWidget(self.s3_s4_checkbox)
+        
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self.donor_tab, "Donor (S1)")
+        self.tabs.addTab(self.acceptor_tab, "Acceptor (S2)")
+        self.tabs.addTab(self.s3_tab, "S3 (Acceptor/Donor)")
+        self.tabs.addTab(self.s4_tab, "S4 (Donor/Acceptor)")
+        main_layout.addWidget(self.tabs)
+        
+        self.s3_tab.setEnabled(False)
+        self.s4_tab.setEnabled(False)
+        self.tabs.setTabVisible(2, False)
+        self.tabs.setTabVisible(3, False)
 
         # Centralized Save/Load controls
         save_load_group = QGroupBox("Manage Parameters")
@@ -793,19 +817,36 @@ class BleedThroughTab(QWidget):
 
         self.setLayout(main_layout)
 
+    def toggle_s3_s4(self, state):
+        self.s3_tab.setEnabled(state)
+        self.s4_tab.setEnabled(state)
+        self.tabs.setTabVisible(2, state)
+        self.tabs.setTabVisible(3, state)
+        self.check_confirmation_status()
+
     def check_confirmation_status(self):
-        if self.donor_tab.fit_is_confirmed and self.acceptor_tab.fit_is_confirmed:
+        confirmed = self.donor_tab.fit_is_confirmed and self.acceptor_tab.fit_is_confirmed
+        if self.s3_s4_checkbox.isChecked():
+            confirmed = confirmed and self.s3_tab.fit_is_confirmed and self.s4_tab.fit_is_confirmed
+            
+        if confirmed:
             self.save_button.setEnabled(True)
-            self.donor_tab.show_status("Both fits confirmed. Ready to transfer.", "green")
-            self.acceptor_tab.show_status("Both fits confirmed. Ready to transfer.", "green")
+            self.donor_tab.show_status("All required fits confirmed. Ready to transfer.", "green")
+            self.acceptor_tab.show_status("All required fits confirmed. Ready to transfer.", "green")
+            if self.s3_s4_checkbox.isChecked():
+                self.s3_tab.show_status("All required fits confirmed. Ready to transfer.", "green")
+                self.s4_tab.show_status("All required fits confirmed. Ready to transfer.", "green")
         else:
             self.save_button.setEnabled(False)
 
     def save_parameters(self):
         file_path = 'bt_params.json' # Predefined file name
         params_to_save = {
+            's3_s4_enabled': self.s3_s4_checkbox.isChecked(),
             'donor_params': self.donor_tab.get_parameters(),
-            'acceptor_params': self.acceptor_tab.get_parameters()
+            'acceptor_params': self.acceptor_tab.get_parameters(),
+            's3_params': self.s3_tab.get_parameters() if self.s3_s4_checkbox.isChecked() else {},
+            's4_params': self.s4_tab.get_parameters() if self.s3_s4_checkbox.isChecked() else {}
         }
 
         try:
@@ -854,8 +895,20 @@ class BleedThroughTab(QWidget):
             self.donor_tab.set_parameters(loaded_params['donor_params'])
             self.acceptor_tab.set_parameters(loaded_params['acceptor_params'])
 
+            s3_s4_enabled = loaded_params.get('s3_s4_enabled', False)
+            self.s3_s4_checkbox.setChecked(s3_s4_enabled)
+            if s3_s4_enabled:
+                if 's3_params' in loaded_params:
+                    self.s3_tab.set_parameters(loaded_params['s3_params'])
+                if 's4_params' in loaded_params:
+                    self.s4_tab.set_parameters(loaded_params['s4_params'])
+
             self.donor_tab.show_status(f"Parameters loaded from {os.path.basename(file_path)}", "green")
             self.acceptor_tab.show_status(f"Parameters loaded from {os.path.basename(file_path)}", "green")
+            if s3_s4_enabled:
+                self.s3_tab.show_status(f"Parameters loaded from {os.path.basename(file_path)}", "green")
+                self.s4_tab.show_status(f"Parameters loaded from {os.path.basename(file_path)}", "green")
+                
             self.check_confirmation_status()
 
         except Exception as e:

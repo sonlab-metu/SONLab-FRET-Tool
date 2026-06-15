@@ -155,6 +155,8 @@ class SONLabGUI(QMainWindow):
         
         self.bt_tab.donor_tab.fit_confirmation_signal.connect(self.check_fits_confirmed)
         self.bt_tab.acceptor_tab.fit_confirmation_signal.connect(self.check_fits_confirmed)
+        self.bt_tab.s3_tab.fit_confirmation_signal.connect(self.check_fits_confirmed)
+        self.bt_tab.s4_tab.fit_confirmation_signal.connect(self.check_fits_confirmed)
         
         # Force update all widgets to apply styles
         QApplication.instance().setStyle(QApplication.instance().style())
@@ -167,7 +169,11 @@ class SONLabGUI(QMainWindow):
         self.tabs.setTabEnabled(self.fret_tab_index, True)
         
         # Control the run button state based on fits confirmation
+        s3_s4_enabled = self.bt_tab.s3_s4_checkbox.isChecked()
         fret_analysis_ready = donor_confirmed and acceptor_confirmed
+        if s3_s4_enabled:
+            fret_analysis_ready = fret_analysis_ready and self.bt_tab.s3_tab.fit_is_confirmed and self.bt_tab.s4_tab.fit_is_confirmed
+            
         if hasattr(self, 'fret_tab') and hasattr(self.fret_tab, 'run_button'):
             self.fret_tab.run_button.setEnabled(fret_analysis_ready)
             self.fret_tab.run_button.setToolTip(
@@ -181,9 +187,17 @@ class SONLabGUI(QMainWindow):
             acceptor_model = self.bt_tab.acceptor_tab.selected_fit_model
             acceptor_coeffs = self.bt_tab.acceptor_tab.fit_results[acceptor_model]
             
+            s3_model = self.bt_tab.s3_tab.selected_fit_model if s3_s4_enabled else None
+            s3_coeffs = self.bt_tab.s3_tab.fit_results.get(s3_model) if s3_s4_enabled else None
+            s4_model = self.bt_tab.s4_tab.selected_fit_model if s3_s4_enabled else None
+            s4_coeffs = self.bt_tab.s4_tab.fit_results.get(s4_model) if s3_s4_enabled else None
+            
             self.fret_tab.set_correction_parameters(
                 donor_model, donor_coeffs,
-                acceptor_model, acceptor_coeffs
+                acceptor_model, acceptor_coeffs,
+                s3_model, s3_coeffs,
+                s4_model, s4_coeffs,
+                s3_s4_enabled
             )
 
     def create_tabs(self):

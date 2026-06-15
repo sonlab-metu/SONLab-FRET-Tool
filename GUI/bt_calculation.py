@@ -36,7 +36,7 @@ def subtract_background(image2, image, kernel_size=30):
     bg_subtracted_image[bg_subtracted_image < 0] = 0
     return bg_subtracted_image
 
-def process_donor_only_samples(donor_paths, sigma=2):
+def process_donor_only_samples(donor_paths, sigma=2, channel='S1'):
     """
     Process donor‐only samples using **segmented** TIFF stacks.
     
@@ -44,7 +44,7 @@ def process_donor_only_samples(donor_paths, sigma=2):
         0 → segmentation mask (binary / labelled)
         1 → FRET channel
         2 → Donor channel (for donor-only samples)
-        3 → *optional* Acceptor channel (ignored here)
+        3 → *optional* Acceptor channel (required for S3)
     
     Parameters
     ----------
@@ -52,16 +52,18 @@ def process_donor_only_samples(donor_paths, sigma=2):
         List of donor-only TIFF paths.
     sigma : float, optional
         Gaussian kernel σ. Default is 2.
+    channel : str, optional
+        'S1' for FRET/Donor or 'S3' for Acceptor/Donor.
     
     Returns
     -------
     tuple[np.ndarray, np.ndarray]
-        (donor intensities, S1 ratios) – both flattened arrays containing **only the
+        (donor intensities, S1/S3 ratios) – both flattened arrays containing **only the
         pixels inside the segmentation mask**.
     """
     
     donor_intensity_accum = []
-    fret_intensity_accum = []
+    numerator_intensity_accum = []
     
     for donor_path in donor_paths:
         images = tiff.imread(donor_path)
@@ -71,51 +73,59 @@ def process_donor_only_samples(donor_paths, sigma=2):
             raise ValueError(
                 "Unsupported donor-only stack. Expected 3 or 4 frames (mask, FRET, Donor[ ,Acceptor])."
             )
+            
+        if channel == 'S3' and n_frames < 4:
+            raise ValueError(
+                "S3 calculation requires 4-frame images (mask, FRET, Donor, Acceptor)."
+            )
         
         # Frame assignments
         mask_frame = images[0] > 0  # boolean mask of labelled pixels
-        fret_raw = images[1].astype(float)
         donor_raw = images[2].astype(float)
+        if channel == 'S1':
+            num_raw = images[1].astype(float)
+        else: # S3
+            num_raw = images[3].astype(float)
         
         # Blur
-        fret_blur = apply_gaussian_blur(fret_raw, sigma)
+        num_blur = apply_gaussian_blur(num_raw, sigma)
         donor_blur = apply_gaussian_blur(donor_raw, sigma)
         
         # Background subtraction (use pre-blur image for local mean estimation)
-        fret_bg = subtract_background(fret_blur, fret_raw)
+        num_bg = subtract_background(num_blur, num_raw)
         donor_bg = subtract_background(donor_blur, donor_raw)
         
         # Apply segmentation mask BEFORE concatenation
-        fret_masked = fret_bg[mask_frame]
+        num_masked = num_bg[mask_frame]
         donor_masked = donor_bg[mask_frame]
         
         # Store
-        fret_intensity_accum.append(fret_masked)
+        numerator_intensity_accum.append(num_masked)
         donor_intensity_accum.append(donor_masked)
     
     donor_combined = np.concatenate(donor_intensity_accum, axis=None)
-    fret_combined = np.concatenate(fret_intensity_accum, axis=None)
+    num_combined = np.concatenate(numerator_intensity_accum, axis=None)
     
-    # S1 ratio
-    S1 = np.divide(
-        fret_combined,
+    # ratio
+    ratio = np.divide(
+        num_combined,
         donor_combined,
-        out=np.zeros_like(fret_combined),
+        out=np.zeros_like(num_combined),
         where=donor_combined != 0,
     )
     
     # Discard unphysical (>1) values
-    valid_mask = S1 < 1
-    return donor_combined[valid_mask], S1[valid_mask]
+    valid_mask = ratio < 1
+    return donor_combined[valid_mask], ratio[valid_mask]
 
-def process_acceptor_only_samples(acceptor_paths, sigma=2):
+def process_acceptor_only_samples(acceptor_paths, sigma=2, channel='S2'):
     """
     Process acceptor‐only samples with the new **segmented** stack format.
     
     Expected stack layout (frames):
         0 → segmentation mask (binary / labelled)
         1 → FRET channel
-        2 → Donor channel (ignored here) *or* Acceptor channel (if only 3 frames)
+        2 → Donor channel (required for S4) *or* Acceptor channel (if only 3 frames)
         3 → Acceptor channel (for 4-frame stacks)
     
     The function auto-detects the correct Acceptor channel frame.
@@ -123,21 +133,30 @@ def process_acceptor_only_samples(acceptor_paths, sigma=2):
     """
     
     acceptor_intensity_accum = []
-    fret_intensity_accum = []
+    numerator_intensity_accum = []
     
     for acceptor_path in acceptor_paths:
         images = tiff.imread(acceptor_path)
         
         n_frames = images.shape[0]
+        if channel == 'S4' and n_frames < 4:
+            raise ValueError(
+                "S4 calculation requires 4-frame images (mask, FRET, Donor, Acceptor)."
+            )
+
         if n_frames == 3:
             # mask, FRET, Acceptor
             mask_frame = images[0] > 0
-            fret_raw = images[1].astype(float)
+            if channel == 'S2':
+                num_raw = images[1].astype(float)
             acceptor_raw = images[2].astype(float)
         elif n_frames == 4:
             # mask, FRET, Donor, Acceptor
             mask_frame = images[0] > 0
-            fret_raw = images[1].astype(float)
+            if channel == 'S2':
+                num_raw = images[1].astype(float)
+            else: # S4
+                num_raw = images[2].astype(float)
             acceptor_raw = images[3].astype(float)
         else:
             raise ValueError(
@@ -145,32 +164,32 @@ def process_acceptor_only_samples(acceptor_paths, sigma=2):
             )
         
         # Blur
-        fret_blur = apply_gaussian_blur(fret_raw, sigma)
+        num_blur = apply_gaussian_blur(num_raw, sigma)
         acceptor_blur = apply_gaussian_blur(acceptor_raw, sigma)
         
         # Background subtraction
-        fret_bg = subtract_background(fret_blur, fret_raw)
+        num_bg = subtract_background(num_blur, num_raw)
         acceptor_bg = subtract_background(acceptor_blur, acceptor_raw)
         
         # Apply segmentation mask
-        fret_masked = fret_bg[mask_frame]
+        num_masked = num_bg[mask_frame]
         acceptor_masked = acceptor_bg[mask_frame]
         
-        fret_intensity_accum.append(fret_masked)
+        numerator_intensity_accum.append(num_masked)
         acceptor_intensity_accum.append(acceptor_masked)
     
     acceptor_combined = np.concatenate(acceptor_intensity_accum, axis=None)
-    fret_combined = np.concatenate(fret_intensity_accum, axis=None)
+    num_combined = np.concatenate(numerator_intensity_accum, axis=None)
     
-    S2 = np.divide(
-        fret_combined,
+    ratio = np.divide(
+        num_combined,
         acceptor_combined,
-        out=np.zeros_like(fret_combined),
+        out=np.zeros_like(num_combined),
         where=acceptor_combined != 0,
     )
     
-    valid_mask = S2 < 1
-    return acceptor_combined[valid_mask], S2[valid_mask]
+    valid_mask = ratio < 1
+    return acceptor_combined[valid_mask], ratio[valid_mask]
 
 def fit_and_plot(x_data, y_data, x_label, y_label, title, ax, use_sampling, sample_size):
     """
