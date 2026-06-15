@@ -13,6 +13,34 @@
 
 SONLab FRET Analysis Tool is a comprehensive graphical application designed for analyzing Fluorescence Resonance Energy Transfer (FRET) data. The application provides a user-friendly interface for processing microscopy images with specialized tools for bleed-through correction, segmentation, and FRET efficiency calculations.
 
+
+## Citation
+
+If you use the SONLab FRET Analysis Tool in your research, please cite our paper:
+
+**APA**
+> Nursoy, A. Z., Cevheroğlu, O., & Son, Ç. D. Automated FRET Analysis for Enhanced Characterization of Protein–Protein Interactions. *Microscopy Research and Technique*. https://doi.org/10.1002/jemt.70147
+
+**MLA**
+> Nursoy, Ahmet Zübeyir, Orkun Cevheroğlu, and Çağdaş Devrim Son. "Automated FRET Analysis for Enhanced Characterization of Protein–Protein Interactions." *Microscopy Research and Technique*. https://doi.org/10.1002/jemt.70147.
+
+**BibTeX**
+```bibtex
+@article{https://doi.org/10.1002/jemt.70147,
+author = {Nursoy, Ahmet Zübeyir and Cevheroğlu, Orkun and Son, Çağdaş Devrim},
+title = {Automated FRET Analysis for Enhanced Characterization of Protein–Protein Interactions},
+journal = {Microscopy Research and Technique},
+volume = {n/a},
+number = {n/a},
+pages = {},
+keywords = {deep learning, fluorescence microscopy, Förster resonance energy transfer (FRET), image analysis, protein–protein interaction},
+doi = {https://doi.org/10.1002/jemt.70147},
+url = {https://analyticalsciencejournals.onlinelibrary.wiley.com/doi/abs/10.1002/jemt.70147},
+eprint = {https://analyticalsciencejournals.onlinelibrary.wiley.com/doi/pdf/10.1002/jemt.70147},
+abstract = {ABSTRACT Förster Resonance Energy Transfer (FRET) analysis is a powerful technique for studying protein–protein interactions; however, manual methods often introduce variability and user dependency. We present the SONLab FRET Analysis Tool, an open-source and automated software that integrates Cellpose for cell segmentation with standardized pipelines for bleed-through correction and FRET efficiency calculation. By minimizing human intervention, the tool improves reproducibility and comparability between experiments. The results demonstrate that the tool achieves FRET efficiencies comparable to those of manual methods but with reduced bias, enabling robust and high-throughput analysis of protein interactions.}
+}
+```
+
 ## Features
 
 - **Bleed-Through (Cross Talk) Correction**: Accurate donor and acceptor bleed-through estimation
@@ -153,33 +181,6 @@ python3 -m GUI.main_gui
 | **macOS app security** | If blocked, right-click the app and select Open, then confirm |
 
 For further help open an issue in the GitHub repository.
-
-## Citation
-
-If you use the SONLab FRET Analysis Tool in your research, please cite our paper:
-
-**APA**
-> Nursoy, A. Z., Cevheroğlu, O., & Son, Ç. D. Automated FRET Analysis for Enhanced Characterization of Protein–Protein Interactions. *Microscopy Research and Technique*. https://doi.org/10.1002/jemt.70147
-
-**MLA**
-> Nursoy, Ahmet Zübeyir, Orkun Cevheroğlu, and Çağdaş Devrim Son. "Automated FRET Analysis for Enhanced Characterization of Protein–Protein Interactions." *Microscopy Research and Technique*. https://doi.org/10.1002/jemt.70147.
-
-**BibTeX**
-```bibtex
-@article{https://doi.org/10.1002/jemt.70147,
-author = {Nursoy, Ahmet Zübeyir and Cevheroğlu, Orkun and Son, Çağdaş Devrim},
-title = {Automated FRET Analysis for Enhanced Characterization of Protein–Protein Interactions},
-journal = {Microscopy Research and Technique},
-volume = {n/a},
-number = {n/a},
-pages = {},
-keywords = {deep learning, fluorescence microscopy, Förster resonance energy transfer (FRET), image analysis, protein–protein interaction},
-doi = {https://doi.org/10.1002/jemt.70147},
-url = {https://analyticalsciencejournals.onlinelibrary.wiley.com/doi/abs/10.1002/jemt.70147},
-eprint = {https://analyticalsciencejournals.onlinelibrary.wiley.com/doi/pdf/10.1002/jemt.70147},
-abstract = {ABSTRACT Förster Resonance Energy Transfer (FRET) analysis is a powerful technique for studying protein–protein interactions; however, manual methods often introduce variability and user dependency. We present the SONLab FRET Analysis Tool, an open-source and automated software that integrates Cellpose for cell segmentation with standardized pipelines for bleed-through correction and FRET efficiency calculation. By minimizing human intervention, the tool improves reproducibility and comparability between experiments. The results demonstrate that the tool achieves FRET efficiencies comparable to those of manual methods but with reduced bias, enabling robust and high-throughput analysis of protein interactions.}
-}
-```
 
 ## Contributing & License
 
