@@ -3,7 +3,7 @@
 <div align="center">
   <img src="GUI/logos/logo.png" alt="SONLab Logo" width="200"/>
   
-  [![Version](https://img.shields.io/badge/version-v2.0.2-blue.svg)](https://sonlab-bio.metu.edu.tr)
+  [![Version](https://img.shields.io/badge/version-v2.0.3--build-blue.svg)](https://sonlab-bio.metu.edu.tr)
   [![License](https://img.shields.io/badge/license-MIT-green.svg)](https://opensource.org/licenses/MIT)
   [![Python](https://img.shields.io/badge/python-3.10-blue.svg)](https://www.python.org/downloads/release/python-31011/)
   [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)]()
