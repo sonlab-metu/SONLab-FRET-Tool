@@ -1261,9 +1261,17 @@ class SONLabGUI(QMainWindow):
 
 
     def open_user_guide(self):
-        pdf_path = resource_path('GUI/user_guide/user_guide.pdf')
-        if not os.path.exists(pdf_path):
-            QMessageBox.warning(self, "User Guide", f"Could not find user_guide.pdf at {pdf_path}.")
+        # The guide lives in user_guide/ at the project root. Check the layouts
+        # used across dev, installed, and PyInstaller-bundled runs.
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        candidates = [
+            resource_path('user_guide/user_guide.pdf'),
+            resource_path('GUI/user_guide/user_guide.pdf'),
+            os.path.join(project_root, 'user_guide', 'user_guide.pdf'),
+        ]
+        pdf_path = next((p for p in candidates if os.path.exists(p)), None)
+        if not pdf_path:
+            QMessageBox.warning(self, "User Guide", "Could not find user_guide.pdf.")
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(pdf_path))
 
