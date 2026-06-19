@@ -9,8 +9,8 @@ from pathlib import Path
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                            QHBoxLayout, QTabWidget, QFrame, QFileDialog, QAction, 
                            QMessageBox, QActionGroup, QCheckBox, QSlider, QWidgetAction, 
-                           QLabel, QProgressBar, QColorDialog, QDialog, QPushButton, 
-                           QWizard, QWizardPage, QTextBrowser, QDialogButtonBox,
+                           QLabel, QProgressBar, QColorDialog, QDialog, QPushButton,
+                           QTextBrowser, QDialogButtonBox,
                            QComboBox, QAbstractSpinBox)
 from PyQt5.QtCore import Qt, QSettings, QTimer, QUrl, QDir, QByteArray, pyqtSignal, QObject, QEvent
 from PyQt5.QtGui import QFont, QIcon, QPalette, QColor, QPixmap, QDesktopServices
@@ -288,7 +288,9 @@ class SONLabGUI(QMainWindow):
         
         # Show Walkthrough
         walkthrough_action = QAction('Show Walkthrough', self)
-        walkthrough_action.triggered.connect(self.show_walkthrough)
+        # Always show when invoked from the menu, regardless of the startup
+        # preference. (triggered passes a bool, so wrap in a lambda.)
+        walkthrough_action.triggered.connect(lambda: self.show_walkthrough(force=True))
         help_menu.addAction(walkthrough_action)
         help_menu.addSeparator()
         
@@ -966,12 +968,16 @@ class SONLabGUI(QMainWindow):
         
         self.settings.setValue("theme", theme_name)
 
-    def show_walkthrough(self):
-        """Show an interactive walkthrough of the application's features."""
-        # Check if we should show the walkthrough
-        if not self.settings.value("showWalkthrough", True, type=bool):
+    def show_walkthrough(self, force=False):
+        """Show an interactive walkthrough of the application's features.
+
+        ``force=True`` (used by the Help menu) always shows the dialog. The
+        automatic startup call leaves ``force=False`` so it respects the
+        "Don't show on startup" preference.
+        """
+        if not force and not self.settings.value("showWalkthrough", True, type=bool):
             return
-            
+
         dialog = QDialog(self)
         dialog.setWindowTitle(f"Welcome to {APP_NAME}")
         dialog.setMinimumSize(800, 600)
@@ -1028,7 +1034,7 @@ class SONLabGUI(QMainWindow):
             <li><b>Batch Processing:</b> Process multiple images in one go</li>
         </ul>
         
-        <p>Use the tabs below to learn more about each feature, or click 'Start Using' to begin.</p>
+        <p>Use the tabs below to learn more about each feature, or click 'OK' to begin.</p>
         """)
         welcome_layout.addWidget(welcome_text)
         welcome_tab.setLayout(welcome_layout)
@@ -1039,23 +1045,24 @@ class SONLabGUI(QMainWindow):
         cellpose_text = QTextBrowser()
         cellpose_text.setOpenExternalLinks(True)
         cellpose_text.setHtml("""
-        <h1>Cellpose Segmentation</h1>
-        <p>The Cellpose integration provides state-of-the-art cell segmentation using deep learning.</p>
-        
+        <h1>Cellpose &amp; Manual Segmentation</h1>
+        <p>The Cellpose integration provides state-of-the-art cell segmentation using deep learning,
+        with manual polygon editing for refinement.</p>
+
         <h2>How to use:</h2>
         <ol>
-            <li>Load your image using the 'Open Image' button</li>
-            <li>Adjust the segmentation parameters as needed</li>
-            <li>Click 'Run Segmentation' to process the image</li>
-            <li>Review and refine the segmentation if necessary</li>
-            <li>Save or export your results</li>
+            <li>Click 'Load Images' (or drag &amp; drop TIFF/CZI files) to add your images</li>
+            <li>Adjust the Cellpose parameters (Model, Cell Diameter, Flow Threshold, Min Cell Size)</li>
+            <li>Click 'Run Segmentation' to process the selected image</li>
+            <li>Refine the result with the ROI Manager: 'Add ROI' to draw a cell, 'Delete ROI' to remove one</li>
+            <li>Use 'Save Results', 'Send to FRET Tab', 'Send to Donor/Acceptor', or 'Batch Segment &amp; Transfer'</li>
         </ol>
-        
+
         <h2>Tips:</h2>
         <ul>
-            <li>Use the 'Preview' button to test parameters on a small region</li>
-            <li>Adjust the 'Cell Diameter' parameter for best results</li>
-            <li>Use the 'Flow Threshold' to control segmentation sensitivity</li>
+            <li>'Cell Diameter' is the most impactful parameter &mdash; set it to 0 for automatic detection</li>
+            <li>Lower the 'Flow Threshold' if cells are merged; increase 'Cell Diameter' if cells are split</li>
+            <li>Raise 'Min Cell Size' to remove debris and small artifacts</li>
         </ul>
         """)
         cellpose_layout.addWidget(cellpose_text)
@@ -1068,30 +1075,61 @@ class SONLabGUI(QMainWindow):
         fret_text.setOpenExternalLinks(True)
         fret_text.setHtml("""
         <h1>FRET Analysis</h1>
-        <p>Perform Fluorescence Resonance Energy Transfer (FRET) analysis on your segmented cells.</p>
-        
+        <p>Compute pixel-wise FRET efficiency on your segmented, bleed-through-corrected cells.</p>
+
         <h2>Workflow:</h2>
         <ol>
-            <li>Complete the segmentation in the Cellpose tab</li>
-            <li>Define your FRET channels in the settings</li>
-            <li>Run the FRET analysis</li>
-            <li>Review the results and export as needed</li>
+            <li>Add segmented images (from the Segmentation tab or from disk)</li>
+            <li>Confirm the bleed-through coefficients carried over from the Bleed-Through tab</li>
+            <li>Choose one or more FRET formulas and set the display thresholds</li>
+            <li>Assign images to groups for comparison, then click 'Run FRET Analysis'</li>
+            <li>Review the maps, statistics, and plots, and export your results</li>
         </ol>
-        
-        <h2>Key Metrics:</h2>
+
+        <h2>What you get:</h2>
         <ul>
-            <li>FRET Efficiency</li>
-            <li>Donor and Acceptor intensities</li>
-            <li>Correlation analysis</li>
-            <li>Time-lapse analysis (if applicable)</li>
+            <li>Color-coded FRET efficiency maps for each formula</li>
+            <li>Per-cell and aggregate statistics (non-zero and thresholded averages)</li>
+            <li>Histograms and box plots with group comparisons and significance testing</li>
+            <li>Export to TIFF, CSV, and publication-ready figures</li>
         </ul>
         """)
         fret_layout.addWidget(fret_text)
         fret_tab.setLayout(fret_layout)
-        
-        # Add tabs
+
+        # Bleed-Through tab
+        bt_tab = QWidget()
+        bt_layout = QVBoxLayout()
+        bt_text = QTextBrowser()
+        bt_text.setOpenExternalLinks(True)
+        bt_text.setHtml("""
+        <h1>Bleed-Through Correction</h1>
+        <p>Measure and correct the spectral cross-talk that leaks from the donor and acceptor
+        fluorophores into the FRET channel, using single-label control images.</p>
+
+        <h2>How to use:</h2>
+        <ol>
+            <li>Select a channel sub-tab: Donor (S1) or Acceptor (S2) &mdash; enable S3/S4 for 4-frame data</li>
+            <li>Add the matching control images: donor-only for S1/S3, acceptor-only for S2/S4</li>
+            <li>Set the processing options (Gaussian Blur Sigma, optional Random Sampling) and click 'Run Analysis'</li>
+            <li>Pick a fitting model (Constant, Linear, or Exponential) and click 'Confirm Fit'</li>
+            <li>Click 'Save Parameters' to store the coefficients for the FRET analysis</li>
+        </ol>
+
+        <h2>Tips:</h2>
+        <ul>
+            <li>Send control images here directly from the Segmentation tab ('Send to Donor/Acceptor')</li>
+            <li>Use the threshold controls to exclude saturated or low-signal pixels before fitting</li>
+            <li>Saved parameters are also copied next to your input images for easy reuse</li>
+        </ul>
+        """)
+        bt_layout.addWidget(bt_text)
+        bt_tab.setLayout(bt_layout)
+
+        # Add tabs (in pipeline order)
         tab_widget.addTab(welcome_tab, "Welcome")
-        tab_widget.addTab(cellpose_tab, "Cellpose Segmentation")
+        tab_widget.addTab(cellpose_tab, "Segmentation")
+        tab_widget.addTab(bt_tab, "Bleed-Through")
         tab_widget.addTab(fret_tab, "FRET Analysis")
         
         layout.addWidget(tab_widget)
@@ -1221,25 +1259,6 @@ class SONLabGUI(QMainWindow):
             self.settings.setValue('customDarkPalette', chosen)
             self.set_theme('dark')
 
-    # ---------------- Walk-through Wizard -----------------
-    def show_wizard(self):
-        wiz = QWizard(self)
-        wiz.setWindowTitle('SONLab FRET Analysis Walk-through')
-        def add_page(title, text):
-            page = QWizardPage()
-            page.setTitle(title)
-            lbl = QLabel(text)
-            lbl.setWordWrap(True)
-            layout = QVBoxLayout(page)
-            layout.addWidget(lbl)
-            return page
-        wiz.addPage(add_page('Welcome', 'This wizard briefly introduces the main tabs.'))
-        wiz.addPage(add_page('Manual Segmentation', 'Use this tab to manually segment images.'))
-        wiz.addPage(add_page('Automated Segmentation', 'Run automated segmentation algorithms here.'))
-        wiz.addPage(add_page('Bleed-Through', 'Fit bleed-through curves for donor/acceptor.'))
-        wiz.addPage(add_page('FRET Calculation', 'Calculate corrected FRET efficiency.'))
-        wiz.exec_()
-        self.settings.setValue('wizardShown', True)
 
     def open_user_guide(self):
         pdf_path = resource_path('GUI/user_guide/user_guide.pdf')
