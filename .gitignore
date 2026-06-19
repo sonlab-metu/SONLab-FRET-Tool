@@ -1,6 +1,7 @@
 *.tif
 *.tiff
 *.czi
+*.json
 __pycache__/
 flowchart/
 Old/
@@ -9,6 +10,7 @@ plot_efficiency_vs_intensity.py
 analyze_fret_results.py
 article_figure/
 Misc/
+github-card/
 *.aux
 *.dvi
 *.log
@@ -16,3 +18,7 @@ Misc/
 *.synctex.gz
 *.tex
 *.toc
+RELEASE_NOTES_v2.0.2.md
+spock_correlation.py
+*.fls
+*.fdb_latexmk
