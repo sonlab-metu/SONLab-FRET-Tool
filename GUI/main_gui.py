@@ -10,8 +10,9 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                            QHBoxLayout, QTabWidget, QFrame, QFileDialog, QAction, 
                            QMessageBox, QActionGroup, QCheckBox, QSlider, QWidgetAction, 
                            QLabel, QProgressBar, QColorDialog, QDialog, QPushButton, 
-                           QWizard, QWizardPage, QTextBrowser, QDialogButtonBox)
-from PyQt5.QtCore import Qt, QSettings, QTimer, QUrl, QDir, QByteArray, pyqtSignal
+                           QWizard, QWizardPage, QTextBrowser, QDialogButtonBox,
+                           QComboBox, QAbstractSpinBox)
+from PyQt5.QtCore import Qt, QSettings, QTimer, QUrl, QDir, QByteArray, pyqtSignal, QObject, QEvent
 from PyQt5.QtGui import QFont, QIcon, QPalette, QColor, QPixmap, QDesktopServices
 
 # Import local modules using relative imports
@@ -32,9 +33,29 @@ except (ImportError, ModuleNotFoundError):
 
 # Application metadata
 APP_NAME = "SONLab FRET Tool"
-APP_VERSION = "v2.0.2"
+APP_VERSION = "v2.0.3-build"
 ORGANIZATION_NAME = "SONLab"
 ORGANIZATION_DOMAIN = "sonlab-bio.metu.edu.tr"
+
+class WheelEventFilter(QObject):
+    """Application-wide filter that prevents the mouse wheel from changing the
+    value of combo boxes and spin boxes.
+
+    Scrolling over these controls is a frequent source of accidental edits,
+    especially when they sit inside scrollable panels. Instead of consuming the
+    wheel event, it is forwarded to the control's parent so the surrounding
+    panel still scrolls as expected. Open combo-box pop-up lists are unaffected
+    because the pop-up is a separate view, not the QComboBox itself.
+    """
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Wheel and isinstance(obj, (QComboBox, QAbstractSpinBox)):
+            parent = obj.parentWidget()
+            if parent is not None:
+                QApplication.sendEvent(parent, event)
+            return True
+        return super().eventFilter(obj, event)
+
 
 # Determine if running as a PyInstaller bundle
 def is_frozen():
@@ -1324,7 +1345,11 @@ def main():
     
     # Create application instance
     app = QApplication(sys.argv)
-    
+
+    # Make combo boxes and spin boxes ignore the mouse wheel app-wide
+    # (parented to the app so it lives for the whole session).
+    app.installEventFilter(WheelEventFilter(app))
+
     # Set application metadata
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
@@ -1350,7 +1375,7 @@ if __name__ == '__main__':
     
     # Define constants
     APP_NAME = "SONLab FRET Tool"
-    APP_VERSION = "v2.0.2"
+    APP_VERSION = "v2.0.3-build"
     ORGANIZATION_NAME = "SONLab"
     ORGANIZATION_DOMAIN = "sonlab-bio.metu.edu.tr"
     

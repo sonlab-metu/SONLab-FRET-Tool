@@ -82,6 +82,29 @@ from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT
 from matplotlib.widgets import PolygonSelector
 from matplotlib.patches import Polygon as MplPolygon
 
+
+def intensity_to_uint16(frame):
+    """Convert an intensity frame to uint16 while preserving its *original*
+    numeric values.
+
+    Frames coming from CZI/TIFF sources hold raw detector counts (e.g. 16-bit
+    microscope data), not values normalised to [0, 1]. They must therefore be
+    written out verbatim -- never rescaled. Integer frames are returned
+    unchanged (cast to uint16); floating-point frames are rounded to the nearest
+    integer and clipped to the uint16 range so the saved values are identical to
+    the source intensities for ordinary 16-bit data.
+
+    Note: this deliberately does NOT multiply by 65535. Doing so corrupts raw
+    counts by overflowing the uint16 range (the cause of issue #51).
+    """
+    frame = np.asarray(frame)
+    if np.issubdtype(frame.dtype, np.integer):
+        # Already integral counts -- clip to the uint16 range to be safe.
+        return np.clip(frame, 0, 65535).astype(np.uint16)
+    # Floating-point raw counts: round to nearest integer, then clip.
+    return np.clip(np.rint(frame.astype(np.float64)), 0, 65535).astype(np.uint16)
+
+
 # Debug information
 print("\n=== Python Environment ===")
 print(f"Python version: {sys.version}")
@@ -1275,9 +1298,10 @@ class CellposeSegmentationTab(QWidget):
         temp_dir = tempfile.gettempdir()
         temp_path = os.path.join(temp_dir, f"temp_{uuid.uuid4().hex}.tif")
         
-        # Convert to uint16 for TIFF saving
+        # Convert to uint16 for TIFF saving, preserving the raw intensity
+        # values exactly (no [0, 1] rescaling -- see intensity_to_uint16).
         if czi_data.dtype != np.uint16:
-            czi_data = (czi_data * 65535).astype(np.uint16)
+            czi_data = intensity_to_uint16(czi_data)
         
         # Save as TIFF
         tifffile.imwrite(temp_path, czi_data, photometric='minisblack',
@@ -2814,19 +2838,14 @@ class CellposeSegmentationTab(QWidget):
                 original_img = self.original_tiff_data
                 print(f"Original TIFF data shape: {original_img.shape}")
             
-            # Add original frames to the list
+            # Add original frames to the list, preserving the raw intensity
+            # values exactly (no [0, 1] rescaling -- see intensity_to_uint16).
             if original_img is not None:
                 if len(original_img.shape) == 3:  # Multi-frame image
                     for frame in original_img:
-                        # Convert to uint16 if needed
-                        if frame.dtype == np.float32:
-                            frame = (frame * 65535).astype(np.uint16)
-                        frames_to_save.append(frame.astype(np.uint16))
+                        frames_to_save.append(intensity_to_uint16(frame))
                 else:  # Single frame image
-                    frame = original_img
-                    if frame.dtype == np.float32:
-                        frame = (frame * 65535).astype(np.uint16)
-                    frames_to_save.append(frame.astype(np.uint16))
+                    frames_to_save.append(intensity_to_uint16(original_img))
             
             # Print debug info about frame shapes
             print("Frame shapes being saved:")
@@ -2951,16 +2970,20 @@ class CellposeSegmentationTab(QWidget):
         return filtered
         
     def clear_image_display(self):
-        """Clear the current image display and related data"""
-        if hasattr(self, 'current_image'):
-            self.current_image = None
-        if hasattr(self, 'current_mask'):
-            self.current_mask = None
-        if hasattr(self, 'current_labels'):
-            self.current_labels = None
-        if hasattr(self, 'ax'):
-            self.ax.clear()
-            self.ax.axis('off')
+        """Clear the current image display and related data, returning the view
+        to its empty state."""
+        self.current_image = None
+        self.current_mask = None
+        self.current_labels = None
+        self.current_image_has_segmentation = False
+        # The image is shown on ax1/ax2; clear those (not the unused self.ax) so
+        # the last image does not linger once the list is empty.
+        for ax_name in ('ax1', 'ax2'):
+            ax = getattr(self, ax_name, None)
+            if ax is not None:
+                ax.clear()
+                ax.axis('off')
+        if getattr(self, 'canvas', None) is not None:
             self.canvas.draw()
     
     def remove_selected_images(self):
@@ -3029,7 +3052,17 @@ class CellposeSegmentationTab(QWidget):
                 
                 # Ensure the list has focus to show selection
                 self.image_list.setFocus()
-        
+
+        # If the list is now empty, return the display to its empty state
+        # instead of leaving the last selected image on screen (issue #46).
+        if self.image_list.count() == 0:
+            self.current_image_path = None
+            self.clear_image_display()
+            if hasattr(self, 'roi_list_widget'):
+                self.roi_list_widget.clear()
+            if hasattr(self, 'roi_items'):
+                self.roi_items = []
+
         # Update status (removed duplicate status update)
         self.update_status(f"Removed {len(selected_items)} image(s) from the list")
     
@@ -3096,13 +3129,13 @@ class CellposeSegmentationTab(QWidget):
                 # Prepare frames with label first, then all original frames in their original order
                 # Use current_labels if available (contains manual edits), otherwise use current_mask
                 mask_to_save = self.current_labels if hasattr(self, 'current_labels') and self.current_labels is not None else self.current_mask
-                frames_to_save = [mask_to_save.astype(np.uint16)]  # Label first with manual edits if available
-                frames_to_save.extend(img)  # Then all original frames
-                
+                frames_to_save = [intensity_to_uint16(mask_to_save)]  # Label first with manual edits if available
+                # Then all original frames, preserving their raw intensity values.
+                frames_to_save.extend(intensity_to_uint16(frame) for frame in img)
+
                 # Save as a multi-frame TIFF with label as first frame
-                tifffile.imwrite(output_path, np.stack(frames_to_save, axis=0), 
-                               photometric='minisblack', metadata={'axes': 'CYX'}, 
-                               dtype=np.uint16)
+                tifffile.imwrite(output_path, np.stack(frames_to_save, axis=0),
+                               photometric='minisblack', metadata={'axes': 'CYX'})
                 
             except Exception as e:
                 self.update_status(f"Error saving original frames: {str(e)}")
@@ -3394,12 +3427,12 @@ class BatchWorker(QThread):
                     # Create a list to hold all frames (mask first, then original frames)
                     frames_to_save = [masks.astype(np.uint16)]
                     
-                    # Add original frames
+                    # Add original frames, preserving raw intensity values.
                     if len(original_img.shape) == 3:  # Multi-frame image
                         for frame in original_img:
-                            frames_to_save.append(frame.astype(np.uint16))
+                            frames_to_save.append(intensity_to_uint16(frame))
                     else:  # Single frame image
-                        frames_to_save.append(original_img.astype(np.uint16))
+                        frames_to_save.append(intensity_to_uint16(original_img))
                     
                     # Save all frames as a multi-page TIFF
                     tifffile.imwrite(output_path, frames_to_save, photometric='minisblack',

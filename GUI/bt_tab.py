@@ -22,9 +22,9 @@ from skimage import exposure
 from PyQt5.QtGui import QImage
 
 try:
-    from GUI.bt_calculation import fit_and_plot, process_donor_only_samples, process_acceptor_only_samples
+    from GUI.bt_calculation import fit_and_plot, process_donor_only_samples, process_acceptor_only_samples, linear, exponential
 except ImportError or ModuleNotFoundError:
-    from bt_calculation import fit_and_plot, process_donor_only_samples, process_acceptor_only_samples
+    from bt_calculation import fit_and_plot, process_donor_only_samples, process_acceptor_only_samples, linear, exponential
 
 class AnalysisChannelTab(QWidget):
     fit_confirmation_signal = pyqtSignal()
@@ -399,6 +399,42 @@ class AnalysisChannelTab(QWidget):
             row = self.image_list.row(item)
             self.image_list.takeItem(row)
             del self.image_paths[row]
+        # Once the list is empty, return the preview, fit plot, and coefficient
+        # display to their empty state instead of leaving the last analysis on
+        # screen (issue #46).
+        if not self.image_paths:
+            self._reset_to_empty_state()
+
+    def _reset_to_empty_state(self):
+        """Clear the preview image, the fit plot and the coefficient labels so
+        nothing from a previous image/analysis lingers when no images remain."""
+        if hasattr(self, 'preview_label'):
+            self.preview_label.clear()
+            self.preview_label.setText("Preview")
+
+        self.results = {}
+        self.fit_results = {}
+        self.threshold_active = False
+
+        if hasattr(self, 'figure'):
+            self.figure.clear()
+            self.ax = self.figure.add_subplot(1, 1, 1)
+            self.ax.axis('off')
+            if hasattr(self, 'canvas'):
+                self.canvas.draw()
+
+        # Reset coefficient labels back to their placeholder text.
+        for model_name, details in self.coeffs_widget.items():
+            if model_name == 'group':
+                continue
+            for param_name, param_label in details['params'].items():
+                param_label.setText(f"{param_name}: --")
+
+        self.fit_is_confirmed = False
+        if hasattr(self, 'confirm_button'):
+            self.confirm_button.setEnabled(False)
+        if hasattr(self, 'reset_button'):
+            self.reset_button.setEnabled(False)
 
     def show_image_preview(self, index):
         """Display the first frame of the selected TIFF image in the preview label."""
@@ -655,11 +691,67 @@ class AnalysisChannelTab(QWidget):
         self.update_coefficient_display()
 
         if self.results:
-            fit_and_plot(self.ax, self.results, self.fit_results, self.selected_fit_model)
+            # Re-draw the scatter plus the *loaded* fit curves. We must not call
+            # fit_and_plot here: it would re-fit the data and overwrite the
+            # coefficients just restored from file (which may have been computed
+            # on thresholded data). Rendering the loaded fit preserves them.
+            x, y, x_label, y_label, title = self._get_channel_plot_data()
+            self._render_loaded_fit(x, y, x_label, y_label, title)
             self.canvas.draw()
-        
+
         self.confirm_button.setEnabled(True)
         self.reset_button.setEnabled(True)
+
+    def _get_channel_plot_data(self):
+        """Return (x, y, x_label, y_label, title) for this channel's results."""
+        if self.channel_name in ['S1', 'S3']:
+            return (self.results['d_intensity'], self.results[self.channel_name.lower()],
+                    'Donor Intensity', f'{self.channel_name} Ratio', f'{self.channel_name} vs Donor')
+        return (self.results['a_intensity'], self.results[self.channel_name.lower()],
+                'Acceptor Intensity', f'{self.channel_name} Ratio', f'{self.channel_name} vs Acceptor')
+
+    def _render_loaded_fit(self, x, y, x_label, y_label, title):
+        """Draw the data scatter and the curves from the currently loaded
+        ``self.fit_results`` without re-fitting, so saved coefficients are kept.
+        """
+        self.figure.clear()
+        self.ax = self.figure.add_subplot(1, 1, 1)
+        self.ax.callbacks.connect('xlim_changed', self.on_zoom_pan)
+        self.ax.callbacks.connect('ylim_changed', self.on_zoom_pan)
+
+        x = np.asarray(x, dtype=float)
+        y = np.asarray(y, dtype=float)
+        mask = np.isfinite(x) & np.isfinite(y) & (x > 0) & (y > 0)
+        x, y = x[mask], y[mask]
+
+        # Optional sampling for display, mirroring fit_and_plot.
+        x_plot, y_plot = x, y
+        sample_size = self.sample_size_spin.value()
+        if self.sampling_check.isChecked() and len(x) > sample_size:
+            np.random.seed(42)
+            idx = np.random.choice(len(x), size=sample_size, replace=False)
+            x_plot, y_plot = x[idx], y[idx]
+
+        self.ax.scatter(x_plot, y_plot, label='Data', alpha=0.5, color='red', s=1)
+
+        fit_results = self.fit_results or {}
+        if len(x):
+            x_fit = np.linspace(x.min(), x.max(), 400)
+            if fit_results.get('Constant') is not None:
+                const_val = float(np.asarray(fit_results['Constant']).ravel()[0])
+                self.ax.plot(x_fit, np.full_like(x_fit, const_val), label='Constant')
+            if fit_results.get('Linear') is not None:
+                self.ax.plot(x_fit, linear(x_fit, *np.asarray(fit_results['Linear']).ravel()), label='Linear')
+            if fit_results.get('Exponential') is not None:
+                self.ax.plot(x_fit, exponential(x_fit, *np.asarray(fit_results['Exponential']).ravel()), label='Exponential')
+
+        self.ax.set_xlabel(x_label)
+        self.ax.set_ylabel(y_label)
+        self.ax.set_title(title)
+        self.ax.legend()
+        self.ax.grid(True)
+        self.ax.set_ylim(0, 1)
+        self.figure.tight_layout()
 
     # -------------------- Threshold UI --------------------
     def create_threshold_group(self):
@@ -839,8 +931,21 @@ class BleedThroughTab(QWidget):
         else:
             self.save_button.setEnabled(False)
 
+    PARAMS_FILENAME = 'bt_params.json'
+
+    def _collect_input_directories(self):
+        """Return the unique directories that contain the images loaded into any
+        of the channel tabs, preserving the order in which they were found."""
+        directories = []
+        for tab in (self.donor_tab, self.acceptor_tab, self.s3_tab, self.s4_tab):
+            for path in getattr(tab, 'image_paths', []):
+                directory = os.path.dirname(os.path.abspath(path))
+                if directory and directory not in directories:
+                    directories.append(directory)
+        return directories
+
     def save_parameters(self):
-        file_path = 'bt_params.json' # Predefined file name
+        file_path = self.PARAMS_FILENAME  # Predefined file name (default location)
         params_to_save = {
             's3_s4_enabled': self.s3_s4_checkbox.isChecked(),
             'donor_params': self.donor_tab.get_parameters(),
@@ -852,12 +957,64 @@ class BleedThroughTab(QWidget):
         try:
             with open(file_path, 'w') as f:
                 json.dump(params_to_save, f, indent=4)
-            self.donor_tab.show_status(f"Parameters saved to {file_path}", "green")
-            self.acceptor_tab.show_status(f"Parameters saved to {file_path}", "green")
-            QMessageBox.information(self, "Success", f"Parameters were successfully saved to {file_path}")
         except Exception as e:
             QMessageBox.critical(self, "Save Error", f"Error saving parameters: {e}")
             traceback.print_exc()
+            return
+
+        # Also save a copy into each input image directory so the bleed-through
+        # model type and coefficients stay alongside the data they describe.
+        # The default-location directory is already covered by the save above.
+        default_dir = os.path.dirname(os.path.abspath(file_path))
+        input_dirs = [d for d in self._collect_input_directories() if d != default_dir]
+        overwrite_existing = True
+        existing_dirs = [d for d in input_dirs
+                         if os.path.exists(os.path.join(d, self.PARAMS_FILENAME))]
+        if existing_dirs:
+            listing = "\n".join(f"  • {d}" for d in existing_dirs)
+            reply = QMessageBox.question(
+                self, "Overwrite existing parameter file(s)?",
+                f"'{self.PARAMS_FILENAME}' already exists in the following input "
+                f"director{'ies' if len(existing_dirs) > 1 else 'y'}:\n\n{listing}\n\n"
+                "Overwrite the existing file(s) with the current parameters?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            overwrite_existing = (reply == QMessageBox.Yes)
+
+        saved_dirs, skipped_dirs, failed_dirs = [], [], []
+        for directory in input_dirs:
+            target = os.path.join(directory, self.PARAMS_FILENAME)
+            if os.path.exists(target) and not overwrite_existing:
+                skipped_dirs.append(directory)
+                continue
+            try:
+                with open(target, 'w') as f:
+                    json.dump(params_to_save, f, indent=4)
+                saved_dirs.append(directory)
+            except Exception as e:
+                failed_dirs.append(directory)
+                print(f"Failed to save parameters copy to {target}: {e}")
+
+        # Build a concise summary of what happened.
+        status = f"Parameters saved to {file_path}"
+        if saved_dirs:
+            status += f"; copied to {len(saved_dirs)} input director{'ies' if len(saved_dirs) > 1 else 'y'}"
+        self.donor_tab.show_status(status, "green")
+        self.acceptor_tab.show_status(status, "green")
+
+        message = f"Parameters were successfully saved to {file_path}."
+        if saved_dirs:
+            message += "\n\nCopied to:\n" + "\n".join(f"  • {d}" for d in saved_dirs)
+        if skipped_dirs:
+            message += "\n\nSkipped (existing file kept):\n" + "\n".join(f"  • {d}" for d in skipped_dirs)
+        if failed_dirs:
+            message += "\n\nFailed to write:\n" + "\n".join(f"  • {d}" for d in failed_dirs)
+        if not input_dirs:
+            message += "\n\nNo input image directories were found, so no per-directory copy was made."
+
+        if failed_dirs:
+            QMessageBox.warning(self, "Saved with warnings", message)
+        else:
+            QMessageBox.information(self, "Success", message)
 
     def load_parameters(self):
         default_path = 'bt_params.json'

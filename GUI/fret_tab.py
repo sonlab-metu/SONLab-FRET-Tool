@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (
     QFileDialog, QListWidget, QFormLayout, QCheckBox, QMessageBox,
     QDoubleSpinBox, QToolButton, QStyle, QTableWidget, QTableWidgetItem, QHeaderView, QListWidgetItem,
     QTabWidget, QApplication, QComboBox, QLineEdit, QButtonGroup, QRadioButton, QScrollArea, QGridLayout,
-    QSplitter, QSpinBox, QColorDialog, QScrollArea, QSizePolicy, QProgressDialog
+    QSplitter, QSpinBox, QColorDialog, QScrollArea, QSizePolicy, QProgressDialog, QTextEdit
 )
 from PyQt5.QtGui import QColor, QIcon
 import matplotlib.pyplot as plt
@@ -36,6 +36,11 @@ def resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 class FretTab(QWidget):
+    # Key prefix for the un-thresholded (mask-applied) efficiency maps kept
+    # alongside the display-thresholded maps so statistics can report a true
+    # non-zero average distinct from the thresholded average (issue #49).
+    NOTHRESH_PREFIX = "_nothresh_"
+
     def __init__(self, config_manager=None, parent=None):
         super().__init__(parent)
         self.config = config_manager
@@ -417,6 +422,315 @@ class FretTab(QWidget):
         ax.plot([x1, x1, x2, x2], [y, y+0.5, y+0.5, y], lw=1.0, c='k')
         ax.text((x1+x2)/2, y+0.5, text, ha='center', va='bottom')
 
+    def _stats_eff_map(self, efficiencies, formula):
+        """Return the efficiency map to use for statistics.
+
+        Prefers the un-thresholded (mask-applied) copy so that the non-zero
+        average is computed over *all* non-zero pixels, independent of the
+        display threshold. Falls back to the stored (possibly thresholded) map
+        for results produced/loaded before this copy existed.
+        """
+        nothresh = efficiencies.get(self.NOTHRESH_PREFIX + formula)
+        if nothresh is not None:
+            return nothresh
+        return efficiencies.get(formula)
+
+    @staticmethod
+    def _normality(arr, alpha=0.05):
+        """Screen a group for normality with the Shapiro-Wilk test.
+
+        Returns ``(is_normal, p_value, note)``. ``is_normal`` is ``False`` when
+        normality cannot be established (n < 3, constant data or test failure)
+        so that the more conservative non-parametric branch is selected.
+        Samples larger than 5000 are treated as adequately normal because
+        Shapiro-Wilk becomes unreliable / over-sensitive there. ``p_value`` is
+        ``None`` when the test could not be run.
+        """
+        arr = np.asarray(arr, dtype=float)
+        arr = arr[np.isfinite(arr)]
+        if arr.size < 3:
+            return False, None, "n < 3 (cannot test)"
+        if np.ptp(arr) == 0:
+            return False, None, "constant values"
+        if arr.size > 5000:
+            return True, None, "n > 5000 (assumed normal)"
+        try:
+            p = float(stats.shapiro(arr).pvalue)
+            return (p > alpha), p, "Shapiro-Wilk"
+        except Exception:
+            return False, None, "test failed"
+
+    @staticmethod
+    def _welch_anova(groups):
+        """One-way Welch's ANOVA (does not assume equal group variances).
+
+        Implements the standard Welch (1951) formulation and returns
+        ``(F, p)``. Groups with fewer than two observations or zero variance
+        are dropped; ``(nan, nan)`` is returned when fewer than two usable
+        groups remain.
+        """
+        arrs = [np.asarray(g, dtype=float) for g in groups]
+        arrs = [a[np.isfinite(a)] for a in arrs]
+        arrs = [a for a in arrs if a.size >= 2 and np.ptp(a) > 0]
+        k = len(arrs)
+        if k < 2:
+            return float('nan'), float('nan')
+        n = np.array([a.size for a in arrs], dtype=float)
+        means = np.array([a.mean() for a in arrs])
+        variances = np.array([a.var(ddof=1) for a in arrs])
+        w = n / variances
+        w_sum = w.sum()
+        grand = (w * means).sum() / w_sum
+        numerator = (w * (means - grand) ** 2).sum() / (k - 1)
+        term = (((1.0 - w / w_sum) ** 2) / (n - 1.0)).sum()
+        denominator = 1.0 + (2.0 * (k - 2) / (k ** 2 - 1.0)) * term
+        f_stat = numerator / denominator
+        df2 = (k ** 2 - 1.0) / (3.0 * term)
+        p = float(stats.f.sf(f_stat, k - 1, df2))
+        return float(f_stat), p
+
+    @staticmethod
+    def _holm_bonferroni(pvals):
+        """Holm-Bonferroni step-down adjusted p-values.
+
+        Controls the family-wise error rate like plain Bonferroni but is
+        uniformly more powerful. Returns adjusted p-values in the original
+        order, each capped at 1.0 and kept monotonic.
+        """
+        m = len(pvals)
+        if m == 0:
+            return []
+        order = sorted(range(m), key=lambda i: pvals[i])
+        adjusted = [0.0] * m
+        running = 0.0
+        for rank, idx in enumerate(order):
+            running = max(running, (m - rank) * pvals[idx])
+            adjusted[idx] = min(running, 1.0)
+        return adjusted
+
+    def _compute_significance_comparisons(self, box_data, labels=None):
+        """Pick statistically appropriate tests for the box-plot significance
+        bars and return a list of ``(i, j, p_adjusted)`` tuples.
+
+        Rather than always using the ordinary equal-variance / normality-
+        assuming forms, the test family is chosen from the data:
+
+        * Every group is screened for normality (Shapiro-Wilk).
+        * If **all** groups look normal, the parametric family is used:
+          Welch's t-test for pairs (unequal-variance form, robust to
+          heteroscedasticity) and, for >2 groups, Welch's ANOVA as the
+          omnibus test.
+        * If **any** group departs from normality, the non-parametric family
+          is used instead: Mann-Whitney U for pairs and Kruskal-Wallis as the
+          omnibus test.
+        * For >2 groups the omnibus test gates the post-hoc comparisons
+          (the standard ANOVA -> post-hoc protocol) and the pairwise p-values
+          are adjusted with Holm-Bonferroni.
+
+        A human-readable summary of the data characteristics and the tests
+        actually performed is stored on ``self._last_stats_report`` so it can be
+        shown in a separate, non-invasive dialog without touching the plot.
+        """
+        from itertools import combinations
+
+        # Keep original indices so the bars map back to the right boxes.
+        valid = [(idx, np.asarray(d, dtype=float)[np.isfinite(np.asarray(d, dtype=float))])
+                 for idx, d in enumerate(box_data) if d is not None and len(d) > 0]
+        valid = [(idx, arr) for idx, arr in valid if arr.size > 0]
+
+        def name_of(idx):
+            if labels is not None and 0 <= idx < len(labels):
+                return str(labels[idx])
+            return f"Group {idx + 1}"
+
+        if len(valid) < 2:
+            self._last_stats_report = (
+                "Not enough groups with data for statistical testing "
+                "(at least two non-empty groups are required)."
+            )
+            return []
+
+        # Per-group descriptive statistics + normality screen (used for both the
+        # test-family decision and the report).
+        group_info = []
+        all_normal = True
+        for idx, arr in valid:
+            is_norm, shp_p, note = self._normality(arr)
+            all_normal = all_normal and is_norm
+            group_info.append({
+                "name": name_of(idx), "n": int(arr.size),
+                "mean": float(np.mean(arr)), "sd": float(np.std(arr, ddof=1)) if arr.size > 1 else 0.0,
+                "median": float(np.median(arr)),
+                "q1": float(np.percentile(arr, 25)), "q3": float(np.percentile(arr, 75)),
+                "normal": is_norm, "shapiro_p": shp_p, "note": note,
+            })
+        parametric = all_normal
+
+        # Homogeneity-of-variance screen (Levene is robust to non-normality);
+        # informational only — Welch forms are used regardless so unequal
+        # variances cannot inflate the error rate.
+        levene_p = None
+        try:
+            if len(valid) >= 2 and all(arr.size >= 2 for _, arr in valid):
+                levene_p = float(stats.levene(*[arr for _, arr in valid], center='median').pvalue)
+        except Exception:
+            levene_p = None
+
+        def pair_p(a, b):
+            if a.size < 2 or b.size < 2:
+                return float('nan')
+            try:
+                if parametric:
+                    # Welch's t-test (does not assume equal variances).
+                    return float(stats.ttest_ind(a, b, equal_var=False).pvalue)
+                return float(stats.mannwhitneyu(a, b, alternative='two-sided').pvalue)
+            except Exception:
+                return float('nan')
+
+        pair_test = "Welch's t-test (unequal variance)" if parametric else "Mann-Whitney U"
+        comparisons = []
+        report_pairs = []
+        omnibus_name = None
+        omnibus_p = None
+        correction = "none (single comparison)"
+
+        if len(valid) == 2:
+            # Two groups: a single test, no multiple-comparison correction.
+            (i, a), (j, b) = valid
+            p = pair_p(a, b)
+            if np.isfinite(p):
+                comparisons = [(i, j, min(p, 1.0))]
+                report_pairs.append((name_of(i), name_of(j), min(p, 1.0)))
+        else:
+            # >2 groups: omnibus test first, then Holm-corrected post-hoc.
+            correction = "Holm-Bonferroni"
+            arrays = [arr for _, arr in valid]
+            try:
+                if parametric:
+                    omnibus_name = "Welch's ANOVA"
+                    _, omnibus_p = self._welch_anova(arrays)
+                else:
+                    omnibus_name = "Kruskal-Wallis"
+                    omnibus_p = float(stats.kruskal(*arrays).pvalue)
+            except Exception:
+                omnibus_p = float('nan')
+
+            # Only run post-hoc comparisons when the omnibus test is significant.
+            if omnibus_p is not None and np.isfinite(omnibus_p) and omnibus_p < 0.05:
+                pairs = list(combinations(valid, 2))
+                raw = [pair_p(a, b) for (_, a), (_, b) in pairs]
+                finite = [(k, p) for k, p in enumerate(raw) if np.isfinite(p)]
+                if finite:
+                    adjusted = self._holm_bonferroni([p for _, p in finite])
+                    adj_by_pair = {k: av for (k, _), av in zip(finite, adjusted)}
+                    for k, ((i, _a), (j, _b)) in enumerate(pairs):
+                        if k in adj_by_pair:
+                            comparisons.append((i, j, adj_by_pair[k]))
+                            report_pairs.append((name_of(i), name_of(j), adj_by_pair[k]))
+
+        self._last_stats_report = self._format_stats_report(
+            group_info, parametric, levene_p, pair_test, omnibus_name,
+            omnibus_p, correction, report_pairs)
+        return comparisons
+
+    def _format_stats_report(self, group_info, parametric, levene_p, pair_test,
+                             omnibus_name, omnibus_p, correction, report_pairs):
+        """Build the plain-text statistical summary shown in the info dialog."""
+        def fmt_p(p):
+            if p is None or (isinstance(p, float) and not np.isfinite(p)):
+                return "n/a"
+            return f"{p:.2e}" if p < 1e-3 else f"{p:.4f}"
+
+        lines = []
+        lines.append("STATISTICAL SUMMARY OF THE VISUALIZED DATA")
+        lines.append("=" * 50)
+        lines.append("")
+        lines.append("Data used: per-cell average values within the selected")
+        lines.append("threshold range (all in-range points; outliers are kept for")
+        lines.append("hypothesis testing and only hidden in the plot).")
+        lines.append("")
+        lines.append("Per-group characteristics")
+        lines.append("-" * 50)
+        for g in group_info:
+            shp = "" if g["shapiro_p"] is None else f", Shapiro p={fmt_p(g['shapiro_p'])}"
+            lines.append(f"• {g['name']}")
+            lines.append(f"    n = {g['n']}   mean = {g['mean']:.3g}   SD = {g['sd']:.3g}")
+            lines.append(f"    median = {g['median']:.3g}   IQR = [{g['q1']:.3g}, {g['q3']:.3g}]")
+            lines.append(f"    normal: {'yes' if g['normal'] else 'no'} ({g['note']}{shp})")
+        lines.append("")
+        lines.append("Assumption checks")
+        lines.append("-" * 50)
+        lines.append(f"• Normality (Shapiro-Wilk, α=0.05): "
+                     f"{'all groups normal' if parametric else 'at least one group non-normal'}")
+        if levene_p is not None:
+            eq = "equal" if levene_p > 0.05 else "unequal"
+            lines.append(f"• Equal variances (Levene, median-centered): "
+                         f"p={fmt_p(levene_p)} → variances likely {eq}")
+        else:
+            lines.append("• Equal variances (Levene): not available")
+        lines.append("")
+        lines.append("Tests performed")
+        lines.append("-" * 50)
+        if parametric:
+            lines.append("• Family: parametric (data consistent with normality)")
+        else:
+            lines.append("• Family: non-parametric (rank-based; robust to non-normality)")
+        lines.append(f"• Pairwise test: {pair_test}")
+        if omnibus_name is not None:
+            lines.append(f"• Omnibus test: {omnibus_name}, p={fmt_p(omnibus_p)}"
+                         + ("  → significant; post-hoc reported"
+                            if (omnibus_p is not None and np.isfinite(omnibus_p) and omnibus_p < 0.05)
+                            else "  → not significant; post-hoc suppressed"))
+        lines.append(f"• Multiple-comparison correction: {correction}")
+        lines.append("")
+        lines.append("Pairwise results")
+        lines.append("-" * 50)
+        if report_pairs:
+            for a, b, p in report_pairs:
+                lines.append(f"• {a} vs {b}: p={fmt_p(p)} {self._p_to_symbol(p)}")
+        else:
+            lines.append("• No pairwise comparisons reported "
+                         "(single group, or omnibus test not significant).")
+        lines.append("")
+        lines.append("Significance symbols: **** p<1e-4, *** p<1e-3, ** p<0.01, * p<0.05, ns = not significant")
+        return "\n".join(lines)
+
+    def _show_stats_report_dialog(self):
+        """Open a non-modal, read-only dialog with the last statistical report.
+
+        Purely informational — it never alters the plot or its data.
+        """
+        report = getattr(self, "_last_stats_report", None)
+        if not report:
+            QMessageBox.information(
+                self, "Statistics details",
+                "No statistical summary is available yet. Generate the box plot first.")
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Statistics details")
+        dlg.setMinimumSize(560, 520)
+        layout = QVBoxLayout(dlg)
+        text = QTextEdit()
+        text.setReadOnly(True)
+        text.setLineWrapMode(QTextEdit.NoWrap)
+        text.setFontFamily("Monospace")
+        text.setPlainText(report)
+        layout.addWidget(text)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        copy_btn = QPushButton("Copy")
+        copy_btn.setToolTip("Copy the summary to the clipboard")
+        copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(report))
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dlg.close)
+        btn_row.addWidget(copy_btn)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+        if not hasattr(self, "_popup_refs"):
+            self._popup_refs = []
+        self._popup_refs.append((dlg,))
+        dlg.show()
+
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
@@ -688,18 +1002,10 @@ class FretTab(QWidget):
             compactness = (np.sum((np.array(inliers) - mean_val) ** 2))/len(inliers) if inliers else 0
             group_stats.append((i, group, mean_val, n_points, compactness))
         
-        # Calculate statistical significance
-        import scipy.stats as stats
-        comparisons = []
-        if len(labels_sorted) == 2:
-            pval = stats.ttest_ind(box_data[0], box_data[1], equal_var=False).pvalue
-            comparisons.append((0, 1, pval))
-        elif len(labels_sorted) > 2:
-            p_anova = stats.f_oneway(*box_data).pvalue
-            from itertools import combinations
-            for (i, j) in combinations(range(len(labels_sorted)), 2):
-                p = stats.ttest_ind(box_data[i], box_data[j], equal_var=False).pvalue * len(labels_sorted)*(len(labels_sorted)-1)/2
-                comparisons.append((i, j, min(p, 1.0)))
+        # Calculate statistical significance using assumption-checked, robust
+        # tests (Welch's t-test / Welch's ANOVA for normal data, Mann-Whitney /
+        # Kruskal-Wallis otherwise; Holm-Bonferroni corrected post-hoc).
+        comparisons = self._compute_significance_comparisons(box_data, labels_sorted)
         
         # Create box plot
         y_max = max(max(d) if d else 0 for d in box_data) * 1.05
@@ -807,6 +1113,12 @@ class FretTab(QWidget):
         save_btn.setIcon(QIcon(resource_path("icons/save.png")))  # Using the same save icon as the main UI
         save_btn.clicked.connect(lambda: self.save_plot(new_fig, "aggregate_boxplot"))
         toolbar_layout.addWidget(save_btn)
+
+        # Informational stats button (does not affect the visualization).
+        stats_btn = QPushButton("Stats info")
+        stats_btn.setToolTip("Show the statistical tests and data characteristics for this plot")
+        stats_btn.clicked.connect(self._show_stats_report_dialog)
+        toolbar_layout.addWidget(stats_btn)
         toolbar_layout.addStretch()
         
         # Add toolbar layout and canvas to container
@@ -1705,9 +2017,15 @@ class FretTab(QWidget):
         save_box.setText("Save 💾")
         save_box.setToolTip("Save box plot as high-res image")
         save_box.clicked.connect(lambda: self.save_plot(self.agg_box_figure, "boxplot"))
-        
+
+        stats_box = QToolButton()
+        stats_box.setText("Stats ℹ")
+        stats_box.setToolTip("Show the statistical tests and data characteristics for this plot")
+        stats_box.clicked.connect(self._show_stats_report_dialog)
+
         box_header = QHBoxLayout()
         box_header.addStretch()
+        box_header.addWidget(stats_box)
         box_header.addWidget(save_box)
         box_header.addWidget(pop_agg_box)
         
@@ -1935,6 +2253,34 @@ class FretTab(QWidget):
             image_path = self.image_paths.pop(index)
             if image_path in self.analysis_results:
                 del self.analysis_results[image_path]
+        # When no images remain, clear every plot/table so the last results do
+        # not linger on screen (issue #46).
+        if not self.image_paths:
+            self._clear_all_displays()
+
+    def _clear_all_displays(self):
+        """Clear every figure and stats table in the tab so nothing from
+        removed images stays visible once the list is empty."""
+        for fig_attr, canvas_attr in [
+            ('figure', 'canvas'),
+            ('hist_figure', 'hist_canvas'),
+            ('box_figure', 'box_canvas'),
+            ('agg_hist_figure', 'agg_hist_canvas'),
+            ('agg_box_figure', 'agg_box_canvas'),
+            ('fourier_image_figure', 'fourier_image_canvas'),
+            ('fft_figure', 'fft_canvas'),
+            ('cell_hist_figure', 'cell_hist_canvas'),
+        ]:
+            fig = getattr(self, fig_attr, None)
+            canvas = getattr(self, canvas_attr, None)
+            if fig is not None:
+                fig.clear()
+            if canvas is not None:
+                canvas.draw()
+        for table_attr in ('current_stats_table', 'binned_stats_table', 'aggregate_stats_table'):
+            table = getattr(self, table_attr, None)
+            if table is not None:
+                table.setRowCount(0)
 
     def reset_parameters(self):
         self.donor_model = None
@@ -2151,16 +2497,24 @@ class FretTab(QWidget):
                         eff_map = self.calculate_fret_efficiency(fret, donor, acceptor, formula_name)
                         # Apply final mask and set out-of-threshold pixels to 0
                         eff_map[~final_mask] = 0
-                        
+
+                        # Keep an un-thresholded (mask-applied) copy of the map so
+                        # that the statistics tables can report a true non-zero
+                        # average that is genuinely distinct from the thresholded
+                        # average. The visualised map below is destructively
+                        # clipped to the display range, which would otherwise make
+                        # the two averages identical (issue #49).
+                        efficiencies[self.NOTHRESH_PREFIX + formula_name] = eff_map.copy()
+
                         # Get current display thresholds
                         lower_thr = self.lower_threshold_spinbox.value()
                         upper_thr = self.upper_threshold_spinbox.value()
-                        
+
                         # Apply display thresholds (set to 0 if outside range)
                         if lower_thr > 0 or upper_thr < 100:  # Only if thresholds are not at default values
                             with np.errstate(invalid='ignore'):  # Ignore invalid comparison warnings
                                 eff_map[(eff_map < lower_thr) | (eff_map > upper_thr)] = 0
-                        
+
                         efficiencies[formula_name] = eff_map
                     
                     # Store channel data with consistent keys
@@ -3055,17 +3409,11 @@ class FretTab(QWidget):
             # Calculate compactness/variance using only inliers
             compactness = (np.sum((np.array(inliers) - mean_val) ** 2))/len(inliers) if inliers else 0
             group_stats.append((i-1, group, mean_val, n_points, compactness))
-        import scipy.stats as stats
-        comparisons = []
-        if len(labels_sorted) == 2:
-            pval = stats.ttest_ind(box_data[0], box_data[1], equal_var=False).pvalue
-            comparisons.append((0,1,pval))
-        elif len(labels_sorted) > 2:
-            p_anova = stats.f_oneway(*box_data).pvalue
-            from itertools import combinations
-            for (i,j) in combinations(range(len(labels_sorted)),2):
-                p = stats.ttest_ind(box_data[i], box_data[j], equal_var=False).pvalue * len(labels_sorted)*(len(labels_sorted)-1)/2
-                comparisons.append((i,j,min(p,1.0)))
+        # Assumption-checked, robust significance testing (see
+        # _compute_significance_comparisons): Welch's t-test / Welch's ANOVA for
+        # normal data, Mann-Whitney / Kruskal-Wallis otherwise, with
+        # Holm-Bonferroni corrected post-hoc comparisons.
+        comparisons = self._compute_significance_comparisons(box_data, labels_sorted)
         y_max = max(max(d) if d else 0 for d in box_data) * 1.05
         step = y_max * 0.05 if y_max > 0 else 1
         cur_y = y_max
@@ -3301,7 +3649,9 @@ class FretTab(QWidget):
                 if "_labels" not in efficiencies or selected_formula not in efficiencies:
                     continue
                 labels_arr = efficiencies["_labels"]
-                eff_map = efficiencies[selected_formula]
+                # Use the un-thresholded map so the non-zero average is distinct
+                # from the thresholded average (issue #49).
+                eff_map = self._stats_eff_map(efficiencies, selected_formula)
                 label_ids = np.unique(labels_arr)
                 label_ids = label_ids[label_ids > 0]
                 for lbl in label_ids:
@@ -3754,9 +4104,11 @@ class FretTab(QWidget):
                     img_data = eff_map
                     print(f"Found efficiency data in 'efficiencies' dict with key: {formula_name}")
                 else:
-                    # Look for efficiency data at root level
+                    # Look for efficiency data at root level. Skip internal
+                    # keys (those starting with '_', e.g. labels and the
+                    # un-thresholded stats copies) and the raw channels.
                     for key in result:
-                        if key not in ['_labels', 'f', 'd', 'a', 'channels'] and isinstance(result[key], np.ndarray):
+                        if not key.startswith('_') and key not in ['f', 'd', 'a', 'channels'] and isinstance(result[key], np.ndarray):
                             img_data = result[key]
                             print(f"Found efficiency data with key: {key}")
                             break
@@ -4965,8 +5317,12 @@ class FretTab(QWidget):
             cbar.set_label('Efficiency (%)')
             ax.set_title(formula_name)
             ax.set_axis_off()
-            valid_mask = np.isfinite(raw_eff_map) & (raw_eff_map > 0)
-            valid_vals = raw_eff_map[valid_mask]
+            # Statistics use the un-thresholded map so the non-zero average
+            # covers all non-zero pixels, not just those within the display
+            # range (issue #49). Display above still uses the thresholded map.
+            stats_eff_map = self._stats_eff_map(efficiencies, formula_name)
+            valid_mask = np.isfinite(stats_eff_map) & (stats_eff_map > 0)
+            valid_vals = stats_eff_map[valid_mask]
             in_threshold_mask = (valid_vals >= lower_thr) & (valid_vals <= upper_thr)
             in_threshold_vals = valid_vals[in_threshold_mask]
             avg_all_nz = np.mean(valid_vals) if valid_vals.size > 0 else 0
@@ -5002,7 +5358,9 @@ class FretTab(QWidget):
                 for formula_name in selected_formulas:
                     if formula_name not in efficiencies:
                         continue
-                    eff_map = efficiencies[formula_name]
+                    # Use the un-thresholded map so the non-zero average is
+                    # distinct from the thresholded average (issue #49).
+                    eff_map = self._stats_eff_map(efficiencies, formula_name)
                     mask = (cell_mask & np.isfinite(eff_map) & (eff_map > 0))
                     vals = eff_map[mask]
                     if vals.size == 0:
