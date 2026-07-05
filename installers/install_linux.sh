@@ -225,7 +225,7 @@ mkdir -p "$(dirname "$DESKTOP_ENTRY")"
 
 cat > "$DESKTOP_ENTRY" << EOL
 [Desktop Entry]
-Version=v2.0.2
+Version=v2.1.0
 Type=Application
 Name=SONLab_FRET_Tool
 Comment=FRET_analysis_tool_for_microscopy

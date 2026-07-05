@@ -12,13 +12,14 @@ This page describes the main window, how to move between the analysis modules, a
 The window is divided into three regions:
 
 - **Menu bar** (top) — application settings and help.
-- **Tab strip** — switches between the three analysis modules:
+- **Tab strip** — switches between the analysis modules:
   - **Cellpose & Manual Segmentation**
   - **Bleed-Through**
   - **FRET Analysis**
+  - **Intensity / Densitometry**
 - **Working area** — the controls and visualizations for the active tab. Most tabs use a left-hand control panel and a central/-right visualization area.
 
-The window title shows the application name and version (for example, `SONLab FRET Tool v2.0.3-build`).
+The window title shows the application name and version (for example, `SONLab FRET Tool v2.1.0-build`).
 
 ---
 
@@ -60,8 +61,9 @@ The window title shows the application name and version (for example, `SONLab FR
 - **ⓘ Info icons** sit next to many controls. Hover over them to read a one-line description of what the control does.
 - **Drag & drop** is supported on image lists — drop `.tif`, `.tiff`, or `.czi` files directly onto a tab to add them.
 - **Mouse wheel** does **not** change the value of dropdowns or spin boxes anywhere in the app; this prevents accidental edits while scrolling. Click a field and type, or use the up/down arrows.
-- **Pop-out (↗) buttons** open a plot in a larger, separate window with its own toolbar and save button.
+- **Pop-out buttons** open a plot in a larger, separate window with its own toolbar and a 300 DPI **Save** button for publication-quality figures. Legends are opened in their own **Legend** window so they never crowd the plot.
 - **Matplotlib toolbars** under plots provide zoom, pan, and save controls.
+- **Metadata** buttons (on the image lists) show the acquisition metadata (TIFF tags / CZI metadata) of the selected image.
 
 ---
 

@@ -9,13 +9,14 @@ Welcome to the official user guide for the **SONLab FRET Analysis Tool**, an ope
 
 ## What the tool does
 
-The application is organized as a three-stage pipeline, one tab per stage:
+The application is organized as a pipeline, one tab per stage:
 
 1. **Cellpose & Manual Segmentation** — detect and segment cells, refine the result by hand, and forward the segmented stacks to the next stages.
 2. **Bleed-Through** — measure the spectral cross-talk coefficients (S1–S4) from single-label control images and fit a correction model.
 3. **FRET Analysis** — compute pixel-wise FRET efficiency with the corrected data, group images by condition, and produce publication-ready statistics and figures.
+4. **Intensity / Densitometry** — object-based intensity analysis of segmented cells (membrane vs whole-cell enrichment, integrated density, CTCF) to check protein localization. Independent of the FRET pipeline.
 
-A typical session moves left-to-right through these tabs. See **[[Workflows and Data Flow]]** for the end-to-end picture.
+A typical FRET session moves left-to-right through the first three tabs. See **[[Workflows and Data Flow]]** for the end-to-end picture.
 
 ---
 
@@ -28,6 +29,7 @@ A typical session moves left-to-right through these tabs. See **[[Workflows and 
 | **[[Segmentation]]** | Loading images, Cellpose parameters, running, manual ROI editing, and transfer |
 | **[[Bleed-Through Correction]]** | Channels S1–S4, processing settings, fitting models, save/load parameters |
 | **[[FRET Analysis]]** | FRET settings, formulas, DFRET calibration, grouping, and running the analysis |
+| **[[Intensity and Densitometry]]** | Membrane-vs-whole-cell intensity, integrated density and CTCF for segmented cells |
 | **[[Results and Visualization]]** | Efficiency maps, statistics tables, histograms, box plots, and the statistics engine |
 | **[[Workflows and Data Flow]]** | How data moves between tabs, recommended end-to-end workflows |
 | **[[File Formats]]** | Input and output file structures (TIFF frame layout, JSON, CSV) |

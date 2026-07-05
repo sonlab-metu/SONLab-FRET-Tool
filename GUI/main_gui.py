@@ -2,6 +2,10 @@
 Main GUI application for SONLab FRET Analysis
 """
 
+try:
+    from GUI.debug import dprint
+except (ImportError, ModuleNotFoundError):
+    from debug import dprint
 import sys
 import os
 import importlib.util
@@ -20,20 +24,26 @@ try:
     from GUI.bt_tab import BleedThroughTab
     from GUI.fret_tab import FretTab
     from GUI.cellpose_segmentation_tab import CellposeSegmentationTab
+    from GUI.intensity_tab import IntensityAnalysisTab
     from GUI.config_manager import ConfigManager
+    from GUI import theme as theme_system
+    from GUI import widgets as widgets_module
 
 except (ImportError, ModuleNotFoundError):
     # Fallback for direct script execution
     from bt_tab import BleedThroughTab
     from fret_tab import FretTab
     from cellpose_segmentation_tab import CellposeSegmentationTab
+    from intensity_tab import IntensityAnalysisTab
     from config_manager import ConfigManager
+    import theme as theme_system
+    import widgets as widgets_module
 
 # Manual segmentation functionality has been merged into CellposeSegmentationTab
 
 # Application metadata
 APP_NAME = "SONLab FRET Tool"
-APP_VERSION = "v2.0.3-build"
+APP_VERSION = "v2.1.0-build"
 ORGANIZATION_NAME = "SONLab"
 ORGANIZATION_DOMAIN = "sonlab-bio.metu.edu.tr"
 
@@ -157,9 +167,11 @@ class SONLabGUI(QMainWindow):
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
         main_layout = QVBoxLayout(main_widget)
-        
+        main_layout.setContentsMargins(10, 8, 10, 8)
+
         # Create tab widget
         self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
         main_layout.addWidget(self.tabs)
         
         # Create and add tabs
@@ -227,11 +239,13 @@ class SONLabGUI(QMainWindow):
         self.bt_tab = BleedThroughTab(self.config, self)
         self.fret_tab = FretTab(self.config, self)
         self.segmentation_tab = CellposeSegmentationTab(self.config, self)
-        
+        self.intensity_tab = IntensityAnalysisTab(self.config, self)
+
         # Add tabs to the tab widget
         self.tabs.addTab(self.segmentation_tab, "Cellpose && Manual Segmentation")
         self.tabs.addTab(self.bt_tab, "Bleed-Through")
         self.tabs.addTab(self.fret_tab, "FRET Analysis")
+        self.tabs.addTab(self.intensity_tab, "Intensity / Densitometry")
         
         # Store the index of the FRET tab for enabling/disabling
         self.fret_tab_index = self.tabs.indexOf(self.fret_tab)
@@ -311,11 +325,6 @@ class SONLabGUI(QMainWindow):
         compact_layout_action.triggered.connect(self.toggle_compact_layout)
         settings_menu.addAction(compact_layout_action)
 
-        # Theme editor
-        edit_dark_action = QAction('Edit Dark Theme...', self)
-        edit_dark_action.triggered.connect(self.open_theme_editor)
-        theme_menu.addAction(edit_dark_action)
-
     def _apply_font_to_all_widgets(self, font):
         """Force-apply the font to every existing widget (needed because
         QApplication.setFont only affects newly created widgets)."""
@@ -380,7 +389,7 @@ class SONLabGUI(QMainWindow):
                             y = (screen_geometry.height() - default_height) // 2
                             self.setGeometry(int(x), int(y), int(default_width), int(default_height))
                 except Exception as e:
-                    print(f"Error restoring window geometry: {e}")
+                    dprint(f"Error restoring window geometry: {e}")
                     # Fallback to default geometry
                     x = (screen_geometry.width() - default_width) // 2
                     y = (screen_geometry.height() - default_height) // 2
@@ -393,7 +402,7 @@ class SONLabGUI(QMainWindow):
                     if isinstance(state, QByteArray) and not state.isEmpty():
                         self.restoreState(state)
                 except Exception as e:
-                    print(f"Error restoring window state: {e}")
+                    dprint(f"Error restoring window state: {e}")
             
             # Load font size after theme is set
             font_size = self.settings.value("fontSize", type=int)
@@ -414,7 +423,7 @@ class SONLabGUI(QMainWindow):
             self.save_geometry_to_config()
             
         except Exception as e:
-            print(f"Error loading settings: {e}")
+            dprint(f"Error loading settings: {e}")
             # Fallback to default settings if there's an error
             self.set_theme("dark")
     
@@ -427,545 +436,51 @@ class SONLabGUI(QMainWindow):
                 self.config.set('window/geometry', geometry.toHex().data().decode())
                 self.config.sync()
         except Exception as e:
-            print(f"Error saving geometry to config: {e}")
+            dprint(f"Error saving geometry to config: {e}")
         
     def set_theme(self, theme_name):
-        """
-        Set the application theme
-        
-        Args:
-            theme_name (str): Name of the theme to apply ('light', 'dark', or 'system')
-        """
-        # Always use Fusion style for consistent palette cross-platform
-        app = QApplication.instance()
-        app.setStyle("Fusion")
-    
-        # Apply custom dark overrides if present
-        custom = self.settings.value('customDarkPalette', {}) if isinstance(self.settings.value('customDarkPalette', {}), dict) else {}
-        
-        if theme_name == 'dark':
-            # Configure matplotlib for dark theme
-            try:
-                import matplotlib as mpl
-                import matplotlib.pyplot as plt
-                mpl.rcParams.update({
-                    'figure.facecolor': '#2b2b2b',
-                    'axes.facecolor': '#2b2b2b',
-                    'savefig.facecolor': '#2b2b2b',
-                    'text.color': '#f0f0f0',
-                    'axes.labelcolor': '#f0f0f0',
-                    'xtick.color': '#f0f0f0',
-                    'ytick.color': '#f0f0f0',
-                    'axes.edgecolor': '#6d6d6d',
-                    'axes.grid': True,
-                    'grid.color': '#3a3a3a',
-                    'figure.titlesize': 'large',
-                    'figure.titleweight': 'bold',
-                    'axes.titlesize': 'medium',
-                    'axes.titleweight': 'bold',
-                    'xtick.labelsize': 'small',
-                    'ytick.labelsize': 'small',
-                    'legend.framealpha': 0.8,
-                    'legend.facecolor': '#3a3a3a',
-                    'legend.edgecolor': '#6d6d6d',
-                })
-            except ImportError:
-                pass
+        """Apply the light or dark theme across the whole application.
 
-            # Create dark palette
-            dark_palette = QPalette()
-            dark_color = QColor(45, 45, 45)
-            disabled_color = QColor(100, 100, 100)
-            text_color = QColor(240, 240, 240)
-            highlight_color = QColor(42, 130, 218)
-            
-            # Set palette colors
-            dark_palette.setColor(QPalette.Window, dark_color)
-            dark_palette.setColor(QPalette.WindowText, text_color)
-            dark_palette.setColor(QPalette.Base, QColor(35, 35, 35))
-            dark_palette.setColor(QPalette.AlternateBase, dark_color)
-            dark_palette.setColor(QPalette.ToolTipBase, text_color)
-            dark_palette.setColor(QPalette.ToolTipText, text_color)
-            dark_palette.setColor(QPalette.Text, text_color)
-            dark_palette.setColor(QPalette.Disabled, QPalette.Text, disabled_color)
-            dark_palette.setColor(QPalette.Button, dark_color.darker(120))
-            dark_palette.setColor(QPalette.ButtonText, text_color)
-            dark_palette.setColor(QPalette.BrightText, Qt.red)
-            dark_palette.setColor(QPalette.Link, highlight_color)
-            dark_palette.setColor(QPalette.Highlight, highlight_color)
-            dark_palette.setColor(QPalette.HighlightedText, Qt.white)
-            dark_palette.setColor(QPalette.LinkVisited, highlight_color.darker(150))
-            
-            # Apply palette to the application
-            app.setPalette(dark_palette)
-            
-            # Force style refresh
-            app.setStyleSheet(app.styleSheet())
-            
-            # Notify all tabs about the theme change
-            self.theme_changed.emit()
-            
-            # Apply tab styles to all tab widgets
-            if hasattr(self, 'apply_tab_styles'):
-                self.apply_tab_styles()
-            
-            # Force update all widgets
-            for widget in app.allWidgets():
-                widget.update()
-            
-            # Apply stylesheet for additional theming
-            dark_stylesheet = """
-                /* Base widget styling */
-                QWidget {
-                    color: #f0f0f0;
-                    background-color: #2b2b2b;
-                    selection-background-color: #3a7abf;
-                    selection-color: white;
-                }
-                
-                /* Main window and header */
-                QMainWindow {
-                    background-color: #2b2b2b;
-                }
-                
-                /* Menu bar */
-                QMenuBar {
-                    background-color: #2b2b2b;
-                    color: #f0f0f0;
-                    border-bottom: 1px solid #3a3a3a;
-                    padding: 2px;
-                }
-                
-                QMenuBar::item {
-                    background: transparent;
-                    padding: 4px 8px;
-                    margin: 2px 1px;
-                    border-radius: 3px;
-                }
-                
-                QMenuBar::item:selected {
-                    background: #3a3a3a;
-                }
-                
-                QMenuBar::item:pressed {
-                    background: #4a4a4a;
-                }
-                
-                /* ===== GLOBAL TAB STYLING ===== */
-                /* Apply to all tab widgets and tab bars */
-                QTabBar {
-                    background: #2b2b2b;
-                    border: none;
-                    spacing: 2px;
-                }
-                
-                QTabBar::tab {
-                    background: #353535;
-                    color: #f0f0f0;
-                    border: 1px solid #3a3a3a;
-                    border-bottom: none;
-                    border-top-left-radius: 4px;
-                    border-top-right-radius: 4px;
-                    padding: 8px 12px;
-                    margin: 0 2px 0 0;
-                    min-width: 80px;
-                }
-                
-                QTabBar::tab:selected {
-                    background: #2b2b2b;
-                    border-bottom: 1px solid #2b2b2b;
-                }
-                
-                QTabBar::tab:!selected {
-                    margin-top: 2px;
-                    background: #2a2a2a;
-                }
-                
-                QTabBar::tab:hover:!selected {
-                    background: #3a3a3a;
-                }
-                
-                /* Tab widget container */
-                QTabWidget::pane {
-                    border: 1px solid #3a3a3a;
-                    top: -1px;
-                    background: #2b2b2b;
-                    position: absolute;
-                    border-radius: 4px;
-                }
-                
-                /* Main tab bar */
-                QTabBar {
-                    background: #2b2b2b;
-                    border: none;
-                    spacing: 2px;
-                    qproperty-drawBase: 0;
-                }
-                
-                /* All tabs (both main and nested) */
-                QTabBar::tab {
-                    background: #353535;
-                    color: #f0f0f0;
-                    border: 1px solid #3a3a3a;
-                    border-bottom: none;
-                    border-top-left-radius: 4px;
-                    border-top-right-radius: 4px;
-                    padding: 8px 12px;
-                    margin: 0 2px 0 0;
-                    min-width: 80px;
-                }
-                
-                /* Selected tab */
-                QTabBar::tab:selected {
-                    background: #2b2b2b;
-                    border-bottom: 1px solid #2b2b2b;
-                    margin-bottom: 0;
-                }
-                
-                /* Unselected tab */
-                QTabBar::tab:!selected {
-                    margin-top: 2px;
-                    background: #2a2a2a;
-                    border-bottom: 1px solid #3a3a3a;
-                }
-                
-                /* Hover state */
-                QTabBar::tab:hover:!selected {
-                    background: #3a3a3a;
-                }
-                
-                /* Tab close button */
-                QTabBar::close-button {
-                    background: transparent;
-                    padding: 0px 2px;
-                    image: url(close.png);
-                }
-                
-                QTabBar::close-button:hover {
-                    background: #4a4a4a;
-                }
-                
-                /* Tab scroll buttons */
-                QTabBar QToolButton {
-                    background: #353535;
-                    border: 1px solid #3a3a3a;
-                    margin: 0;
-                    padding: 4px;
-                }
-                
-                QTabBar QToolButton::left-arrow, 
-                QTabBar QToolButton::right-arrow {
-                    width: 16px;
-                    height: 16px;
-                    image: none;
-                }
-                
-                /* Nested tab widgets */
-                QTabWidget QTabWidget::pane {
-                    border: 1px solid #3a3a3a;
-                    top: 1px;
-                }
-                
-                QTabWidget QTabBar::tab {
-                    padding: 4px 8px;
-                    min-width: 60px;
-                    font-size: 0.9em;
-                }
-            
-            /* Navigation toolbar */
-            QToolBar {
-                background: #2b2b2b;
-                border: 1px solid #3a3a3a;
-                border-radius: 4px;
-                spacing: 2px;
-                padding: 2px;
-            }
-            
-            QToolBar QToolButton {
-                background: #3a3a3a;
-                border: 1px solid #4a4a4a;
-                border-radius: 3px;
-                padding: 3px;
-                margin: 1px;
-            }
-            
-            QToolBar QToolButton:hover {
-                background: #4a4a4a;
-                border: 1px solid #5a5a5a;
-            }
-            
-            QToolBar QToolButton:pressed {
-                background: #2a2a2a;
-            }
-            
-            /* Standard widgets */
-            QLineEdit, 
-            QTextEdit, 
-            QPlainTextEdit, 
-            QSpinBox, 
-            QDoubleSpinBox, 
-            QComboBox, 
-            QListWidget, 
-            QTreeWidget, 
-            QTableWidget {
-                background-color: #1e1e1e;
-                color: #e0e0e0;
-                border: 1px solid #3a3a3a;
-                padding: 3px;
-                border-radius: 3px;
-            }
-            
-            QPushButton, 
-            QToolButton {
-                background-color: #3a3a3a;
-                color: #e0e0e0;
-                border: 1px solid #4a4a4a;
-                padding: 5px;
-                border-radius: 3px;
-            }
-            
-            QPushButton:hover, 
-            QToolButton:hover {
-                background-color: #4a4a4a;
-                border: 1px solid #5a5a5a;
-            }
-            
-            QPushButton:pressed, 
-            QToolButton:pressed {
-                background-color: #2a2a2a;
-            }
-            
-            /* Headers and tooltips */
-            QHeaderView::section {
-                background-color: #353535;
-                color: #f0f0f0;
-                padding: 4px;
-                border: 1px solid #3a3a3a;
-            }
-            
-            QToolTip {
-                color: #f0f0f0;
-                background-color: #353535;
-                border: 1px solid #3a3a3a;
-            }
-            
-            /* Menu styling */
-            QMenu {
-                background-color: #2b2b2b;
-                color: #f0f0e0;
-                border: 1px solid #3a3a3a;
-            }
-            
-            QMenu::item:selected {
-                background-color: #3a7abf;
-                color: white;
-            }
-            
-            QMenu::item {
-                padding: 4px 25px 4px 20px;
-            }
-            
-            QMenu::separator {
-                height: 1px;
-                background: #3a3a3a;
-                margin: 4px 0px;
-            }
-                
-                /* Selected tab */
-                QTabBar::tab:selected, QTabBar::tab:selected:active {
-                    background: #2b2b2b !important;
-                    border-bottom: 1px solid #2b2b2b !important;
-                    margin-bottom: -1px !important;
-                }
-                
-                /* Unselected tab */
-                QTabBar::tab:!selected {
-                    margin-top: 2px !important;
-                    background: #2a2a2a !important;
-                    border-bottom: 1px solid #3a3a3a !important;
-                }
-                
-                /* Hover state */
-                QTabBar::tab:hover:!selected {
-                    background: #3a3a3a !important;
-                }
-                
-                /* Tab close button */
-                QTabBar::close-button {
-                    background: transparent !important;
-                    padding: 0px 2px !important;
-                }
-                
-                QTabBar::close-button:hover {
-                    background: #4a4a4a !important;
-                }
-                
-                /* Tab scroll buttons */
-                QTabBar QToolButton {
-                    background: #353535 !important;
-                    border: 1px solid #3a3a3a !important;
-                    margin: 0 !important;
-                    padding: 0 !important;
-                }
-                
-                QTabBar QToolButton::left-arrow, 
-                QTabBar QToolButton::right-arrow {
-                    width: 16px !important;
-                    height: 16px !important;
-                    image: none !important; /* Remove default arrow images */
-                }
-                
-                /* Tab bar corner widget */
-                QTabWidget::tab-bar {
-                    left: 0; /* Move the tabs to the far left */
-                }
-                
-                /* Ensure tab bar text is visible */
-                QTabBar QLabel, 
-                QTabBar::tab {
-                    color: #f0f0f0 !important;
-                    background: transparent !important;
-                }
-                
-                /* Fix for tab bar in dock widgets */
-                QDockWidget QTabBar::tab {
-                    margin-bottom: 0px !important;
-                    padding: 4px 8px !important;
-                }
-                
-                /* Special case for tab bars in tab widgets */
-                QTabWidget QTabBar::tab {
-                    margin-bottom: -1px !important;
-                }
-                
-                /* Matplotlib figure styling */
-                FigureCanvas, MplWidget {
-                    background-color: #1e1e1e;
-                    border: 1px solid #3a3a3a;
-                    border-radius: 4px;
-                }
-                
-                /* Standard widgets (duplicate removed) */
-                QLineEdit, 
-                QTextEdit, 
-                QPlainTextEdit, 
-                QSpinBox, 
-                QDoubleSpinBox, 
-                QComboBox, 
-                QListWidget, 
-                QTreeWidget, 
-                QTableWidget {
-                    background-color: #1e1e1e;
-                    color: #e0e0e0;
-                    border: 1px solid #3a3a3a;
-                    padding: 3px;
-                    border-radius: 3px;
-                }
-                
-                QPushButton, 
-                QToolButton {
-                    background-color: #3a3a3a;
-                    color: #e0e0e0;
-                    border: 1px solid #4a4a4a;
-                    padding: 5px;
-                    border-radius: 3px;
-                }
-                
-                QPushButton:hover, 
-                QToolButton:hover {
-                    background-color: #4a4a4a;
-                    border: 1px solid #5a5a5a;
-                }
-                
-                QPushButton:pressed, 
-                QToolButton:pressed {
-                    background-color: #2a2a2a;
-                }
-                
-                /* Headers and tooltips */
-                QHeaderView::section {
-                    background-color: #353535;
-                    color: #f0f0f0;
-                    padding: 4px;
-                    border: 1px solid #3a3a3a;
-                }
-                
-                QToolTip {
-                    color: #f0f0f0;
-                    background-color: #353535;
-                    border: 1px solid #3a3a3a;
-                }
-                
-                /* Menu styling */
-                QMenu {
-                    background-color: #2b2b2b;
-                    color: #f0f0f0;
-                    border: 1px solid #3a3a3a;
-                }
-                
-                QMenu::item:selected {
-                    background-color: #3a7abf;
-                }
-                
-                /* Scrollbars */
-                QScrollBar:vertical, 
-                QScrollBar:horizontal {
-                    border: 1px solid #3a3a3a;
-                    background: #2b2b2b;
-                    width: 12px;
-                    margin: 0px;
-                }
-                
-                QScrollBar::handle:vertical, 
-                QScrollBar::handle:horizontal {
-                    background: #4a4a4a;
-                    min-height: 20px;
-                    min-width: 20px;
-                    border-radius: 3px;
-                }
-                
-                QScrollBar::handle:vertical:hover, 
-                QScrollBar::handle:horizontal:hover {
-                    background: #5a5a5a;
-                }
-                
-                QScrollBar::add-line:vertical, 
-                QScrollBar::sub-line:vertical,
-                QScrollBar::add-line:horizontal, 
-                QScrollBar::sub-line:horizontal {
-                    height: 0px;
-                    width: 0px;
-                }
-            """
-            try:
-                app.setStyleSheet(dark_stylesheet)
-            except Exception as e:
-                print(f"Error setting dark stylesheet: {str(e)}")
-                app.setStyleSheet("")  # Fallback to default stylesheet
-            if hasattr(self, 'theme_action_group') and self.theme_action_group is not None:
-                self.theme_action_group.actions()[1].setChecked(True)
-        else:
-            # Reset to default light theme
-            app.setPalette(app.style().standardPalette())
-            
-            # Force style refresh
-            app.setStyleSheet("")
-            
-            # Update theme action group
-            if hasattr(self, 'theme_action_group') and self.theme_action_group is not None:
-                self.theme_action_group.actions()[0].setChecked(True)
-                
-            # Force update all widgets
-            for widget in app.allWidgets():
-                widget.update()
-                
-            # Notify all tabs about the theme change
-            self.theme_changed.emit()
-        
-        # Force update all widgets
+        All visual styling is defined centrally in :mod:`GUI.theme`; this method
+        just applies the matching palette, style sheet and matplotlib settings
+        and notifies the tabs so they can refresh their canvases.
+
+        Args:
+            theme_name (str): ``'light'`` or ``'dark'`` (anything else -> dark).
+        """
+        app = QApplication.instance()
+        theme_name = 'light' if str(theme_name).lower() == 'light' else 'dark'
+
+        # A consistent base style across platforms lets our palette + QSS win.
+        app.setStyle("Fusion")
+        app.setPalette(theme_system.build_qpalette(theme_name))
+        stylesheet = theme_system.build_stylesheet(theme_name)
+        # Compact mode (denser layout for small screens) is applied on top so it
+        # survives theme switches, not just the Compact Layout toggle.
+        if self.settings.value('compactLayout', False, type=bool):
+            stylesheet += theme_system.compact_stylesheet()
+        app.setStyleSheet(stylesheet)
+        theme_system.apply_matplotlib_style(theme_name)
+
+        # Re-tint vector button icons to match the new theme.
+        widgets_module.apply_icon_theme(self, theme_name)
+
+        # Let tabs refresh plot colours / canvas backgrounds for the new theme.
+        self.theme_changed.emit()
+        if hasattr(self, 'apply_tab_styles'):
+            self.apply_tab_styles()
+
+        # Keep the Settings > Theme radio buttons in sync (0=Light, 1=Dark).
+        if getattr(self, 'theme_action_group', None) is not None:
+            index = 0 if theme_name == 'light' else 1
+            actions = self.theme_action_group.actions()
+            if len(actions) > index:
+                actions[index].setChecked(True)
+
+        # Repaint every existing widget so the new style takes effect at once.
         for widget in app.allWidgets():
             widget.update()
-        
+
         self.settings.setValue("theme", theme_name)
 
     def show_walkthrough(self, force=False):
@@ -1003,7 +518,7 @@ class SONLabGUI(QMainWindow):
                         logo_found = True
                         break
                 except Exception as e:
-                    print(f"Error loading logo {logo_path}: {str(e)}")
+                    dprint(f"Error loading logo {logo_path}: {str(e)}")
         
         if not logo_found and hasattr(self, 'windowIcon') and not self.windowIcon().isNull():
             logo_label.setPixmap(self.windowIcon().pixmap(100, 100))
@@ -1180,7 +695,7 @@ class SONLabGUI(QMainWindow):
                             logo_found = True
                             break
                     except Exception as e:
-                        print(f"Error loading logo {logo_path}: {str(e)}")
+                        dprint(f"Error loading logo {logo_path}: {str(e)}")
             
             # If no logo found, use the application icon
             if not logo_found and hasattr(self, 'windowIcon') and not self.windowIcon().isNull():
@@ -1224,40 +739,13 @@ class SONLabGUI(QMainWindow):
 
     # ---------------- Layout Toggle -----------------
     def toggle_compact_layout(self, compact: bool):
-        if compact:
-            QApplication.instance().setStyleSheet("* { padding: 2px; margin: 2px; }")
-        else:
-            QApplication.instance().setStyleSheet("")
-        self.settings.setValue('compactLayout', compact)
+        """Toggle a denser layout for small screens.
 
-    # ---------------- Theme Editor -----------------
-    def open_theme_editor(self):
-        dlg = QDialog(self)
-        dlg.setWindowTitle('Dark Theme Editor')
-        vbox = QVBoxLayout(dlg)
-        pick_bg_btn = QPushButton('Pick Window Color')
-        pick_text_btn = QPushButton('Pick Text Color')
-        pick_highlight_btn = QPushButton('Pick Highlight Color')
-        preview_label = QLabel('Preview')
-        vbox.addWidget(pick_bg_btn)
-        vbox.addWidget(pick_text_btn)
-        vbox.addWidget(pick_highlight_btn)
-        vbox.addWidget(preview_label)
-        chosen = {}
-        def pick_color(key):
-            col = QColorDialog.getColor(parent=dlg)
-            if col.isValid():
-                chosen[key] = col.name()
-                preview_label.setStyleSheet(f"background-color: {chosen.get('bg', '#333')}; color: {chosen.get('text', '#fff')};")
-        pick_bg_btn.clicked.connect(lambda: pick_color('bg'))
-        pick_text_btn.clicked.connect(lambda: pick_color('text'))
-        pick_highlight_btn.clicked.connect(lambda: pick_color('hl'))
-        ok_btn = QPushButton('Save')
-        vbox.addWidget(ok_btn)
-        ok_btn.clicked.connect(dlg.accept)
-        if dlg.exec_() == QDialog.Accepted and chosen:
-            self.settings.setValue('customDarkPalette', chosen)
-            self.set_theme('dark')
+        The compact style sheet is (re)applied inside :meth:`set_theme` based on
+        this saved setting, so it stays in effect across theme switches.
+        """
+        self.settings.setValue('compactLayout', compact)
+        self.set_theme(self.settings.value('theme', 'dark'))
 
 
     def open_user_guide(self):
@@ -1297,7 +785,7 @@ class SONLabGUI(QMainWindow):
                         logo_found = True
                         break
                 except Exception as e:
-                    print(f"Error loading logo {logo_path}: {str(e)}")
+                    dprint(f"Error loading logo {logo_path}: {str(e)}")
         
         # If no logo found, use the application icon
         if not logo_found and hasattr(self, 'windowIcon') and not self.windowIcon().isNull():
@@ -1347,7 +835,7 @@ class SONLabGUI(QMainWindow):
                 self.config.sync()
                 
             except Exception as e:
-                print(f"Error saving window state: {e}")
+                dprint(f"Error saving window state: {e}")
                 
         finally:
             # Always call the parent's closeEvent
@@ -1402,7 +890,7 @@ if __name__ == '__main__':
     
     # Define constants
     APP_NAME = "SONLab FRET Tool"
-    APP_VERSION = "v2.0.3-build"
+    APP_VERSION = "v2.1.0-build"
     ORGANIZATION_NAME = "SONLab"
     ORGANIZATION_DOMAIN = "sonlab-bio.metu.edu.tr"
     
@@ -1410,7 +898,7 @@ if __name__ == '__main__':
     try:
         main()
     except Exception as e:
-        print(f"Error running application: {e}")
+        dprint(f"Error running application: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)

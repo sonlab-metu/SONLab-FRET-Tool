@@ -37,6 +37,18 @@ whole-cell_segmented_<name>.tif   # when filled masks are used
 
 This is exactly the layout the Bleed-Through and FRET tabs expect. Raw intensities of every channel are preserved so downstream calculations are accurate.
 
+### Membrane + whole-cell stacks (*Segment both*)
+
+When **Segment both (membrane + whole-cell)** is enabled, the file is prefixed `both_segmented_` and uses a different layout intended for the **[[Intensity and Densitometry]]** tab:
+
+| Frame | Content |
+|-------|---------|
+| 0 | **Outline** (membrane) label mask — a band drawn inward from each cell border |
+| 1 | **Filled** (whole-cell) label mask |
+| 2…N | Raw image channels, in their **original input order** (not reordered) |
+
+Both masks share the same label ids, so each cell's membrane band and whole-cell body correspond. The Intensity tab's channel registry lets you declare which frame is which. These stacks are **not** meant for the Bleed-Through or FRET tabs.
+
 ---
 
 ## Bleed-through parameters (`bt_params.json`)
@@ -66,6 +78,15 @@ Each channel block records the fitting model, its coefficients, the processing s
 | Figures (maps, histograms, box plots) | PNG / PDF | **Save** button on any plot or its pop-out window |
 
 Efficiency maps store percentage values (0–100%) as floating-point pixels, with background and excluded pixels set to 0.
+
+---
+
+## Intensity / Densitometry outputs
+
+| Output | Format | Location / how |
+|--------|--------|----------------|
+| Per-cell measurements | CSV | **Export CSV** — one row per cell × channel with columns `image, group, cell, channel` and every metric (membrane/interior/whole mean, area, integrated density, CTCF, membrane enrichment, membrane fraction) |
+| Figures (histogram, box plot, scatter, legend) | PNG / TIFF / PDF / SVG | **Save Plot (300 DPI)** in any plot pop-out |
 
 ---
 

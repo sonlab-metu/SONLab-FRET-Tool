@@ -3,7 +3,7 @@
 <div align="center">
   <img src="GUI/logos/logo.png" alt="SONLab Logo" width="200"/>
   
-  [![Version](https://img.shields.io/badge/version-v2.0.3--build-blue.svg)](https://sonlab-bio.metu.edu.tr)
+  [![Version](https://img.shields.io/badge/version-v2.1.0--build-blue.svg)](https://sonlab-bio.metu.edu.tr)
   [![License](https://img.shields.io/badge/license-MIT-green.svg)](https://opensource.org/licenses/MIT)
   [![Python](https://img.shields.io/badge/python-3.10-blue.svg)](https://www.python.org/downloads/release/python-31011/)
   [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)]()
@@ -47,6 +47,7 @@ abstract = {ABSTRACT Förster Resonance Energy Transfer (FRET) analysis is a pow
 - **Automated Segmentation**: Multiple thresholding methods and Cellpose integration
 - **Manual ROI Selection**: Interactive tools for precise region-of-interest selection
 - **FRET Analysis**: Comprehensive calculation of FRET efficiency and related metrics
+- **Intensity / Densitometry**: Object-based intensity analysis of segmented cells — membrane-vs-whole-cell enrichment, integrated density, and CTCF for checking protein localization
 - **Data Export**: Save analysis results in various formats for downstream processing
 - **Customizable Interface**: Adjustable UI elements and theming options
 
@@ -174,7 +175,7 @@ python3 -m GUI.main_gui
 
 | Issue | Solution |
 |-------|----------|
-| **Python not found** | Ensure Python 3.8+ is installed and in your system PATH |
+| **Python not found** | Ensure Python 3.10 is installed and in your system PATH |
 | **Missing dependencies** | Install required system packages (see Prerequisites) |
 | **Import errors** | Make sure all Python dependencies are installed in the virtual environment |
 | **GPU not detected** | Verify CUDA/cuDNN is installed and compatible with your PyTorch version |

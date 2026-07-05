@@ -9,12 +9,17 @@ capabilities in a single interface. Users can:
 - Adjust image display settings
 - Save and transfer segmentation results to the FRET analysis tab
 """
+try:
+    from GUI.debug import dprint
+except (ImportError, ModuleNotFoundError):
+    from debug import dprint
 import os
 import sys
 import time
 import numpy as np
 import tifffile
 import cv2
+from scipy.ndimage import binary_erosion
 import torch
 import warnings
 
@@ -61,7 +66,7 @@ try:
     CZI_AVAILABLE = True
 except ImportError:
     CZI_AVAILABLE = False
-    print("Warning: czifile module not found. CZI file support will be disabled.")
+    dprint("Warning: czifile module not found. CZI file support will be disabled.")
 
 # PyQt5 Imports
 from PyQt5.QtWidgets import (
@@ -70,7 +75,7 @@ from PyQt5.QtWidgets import (
     QDialog, QFormLayout, QLineEdit, QDialogButtonBox, QGroupBox,
     QSpinBox, QDoubleSpinBox, QComboBox, QCheckBox, QSplitter,
     QSlider, QSizePolicy, QToolButton, QStyle, QToolTip, QProgressDialog, QScrollArea,
-    QTabWidget, QInputDialog, QProgressBar, QApplication
+    QTabWidget, QInputDialog, QProgressBar, QApplication, QButtonGroup
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QMimeData, QTimer, QSize, QPoint, QObject, QEvent
 from PyQt5.QtGui import QImage, QPixmap, QPainter, QPen, QColor, QDragEnterEvent, QDropEvent
@@ -78,9 +83,17 @@ from PyQt5.QtGui import QImage, QPixmap, QPainter, QPen, QColor, QDragEnterEvent
 # Matplotlib imports
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
+from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT
-from matplotlib.widgets import PolygonSelector
+from matplotlib.widgets import PolygonSelector, RectangleSelector, EllipseSelector
 from matplotlib.patches import Polygon as MplPolygon
+
+try:
+    from GUI import theme as theme_system
+    from GUI import widgets as ui_widgets
+except (ImportError, ModuleNotFoundError):
+    import theme as theme_system
+    import widgets as ui_widgets
 
 
 def intensity_to_uint16(frame):
@@ -106,9 +119,9 @@ def intensity_to_uint16(frame):
 
 
 # Debug information
-print("\n=== Python Environment ===")
-print(f"Python version: {sys.version}")
-print(f"Working directory: {os.getcwd()}")
+dprint("\n=== Python Environment ===")
+dprint(f"Python version: {sys.version}")
+dprint(f"Working directory: {os.getcwd()}")
 
 # Import Cellpose with error handling
 CELLPOSE_AVAILABLE = False
@@ -119,36 +132,36 @@ try:
     # Get Cellpose version
     try:
         cellpose_version = importlib.metadata.version('cellpose')
-        print(f"Cellpose version: {cellpose_version}")
+        dprint(f"Cellpose version: {cellpose_version}")
     except:
-        print("Could not determine Cellpose version")
+        dprint("Could not determine Cellpose version")
     
     # Debug available models and functions
-    print("\n=== Cellpose Debug Info ===")
-    print(f"Cellpose available: {CELLPOSE_AVAILABLE}")
-    print(f"Models module: {dir(models)}")
+    dprint("\n=== Cellpose Debug Info ===")
+    dprint(f"Cellpose available: {CELLPOSE_AVAILABLE}")
+    dprint(f"Models module: {dir(models)}")
     
     if hasattr(models, 'MODEL_NAMES'):
-        print(f"Available models: {models.MODEL_NAMES}")
+        dprint(f"Available models: {models.MODEL_NAMES}")
     else:
-        print("MODEL_NAMES not found in models")
+        dprint("MODEL_NAMES not found in models")
         
     CELLPOSE_AVAILABLE = True
     
 except ImportError as e:
-    print(f"\n=== Cellpose Import Error ===")
-    print(f"Error importing Cellpose: {e}")
-    print("Please install Cellpose with: pip install cellpose")
-    print("Or with GPU support: pip install cellpose[all]")
+    dprint(f"\n=== Cellpose Import Error ===")
+    dprint(f"Error importing Cellpose: {e}")
+    dprint("Please install Cellpose with: pip install cellpose")
+    dprint("Or with GPU support: pip install cellpose[all]")
     
 # Import OpenCV with error handling
 try:
     import cv2
-    print(f"\nOpenCV version: {cv2.__version__}")
+    dprint(f"\nOpenCV version: {cv2.__version__}")
     CV2_AVAILABLE = True
 except ImportError:
     CV2_AVAILABLE = False
-    print("\nWarning: OpenCV not available. Some features may be limited.")
+    dprint("\nWarning: OpenCV not available. Some features may be limited.")
 
 class CellposeSegmentationTab(QWidget):
     """
@@ -195,9 +208,15 @@ class CellposeSegmentationTab(QWidget):
             'flow_threshold': 0.4,
             'cellprob_threshold': 0.0,
             'min_size': 15000,
-            'outline_only': True,
+            'outline_only': False,
+            'segment_both': False,
             'adjust_outline': True,
-            'outline_thickness': 10
+            'outline_thickness': 10,
+            # Channel registry: which raw input frame index holds each channel.
+            # Segmentation normalizes output to [label, FRET, Donor, Acceptor].
+            'fret_index': 0,
+            'donor_index': 1,
+            'acceptor_index': 2,
         }
         
         # Enable drag and drop
@@ -228,8 +247,12 @@ class CellposeSegmentationTab(QWidget):
         self.cellprob_spin.valueChanged.connect(self._throttled_save_prefs)
         self.minsize_spin.valueChanged.connect(self._throttled_save_prefs)
         self.outline_check.toggled.connect(self._throttled_save_prefs)
+        self.both_check.toggled.connect(self._throttled_save_prefs)
         self.outline_thickness_check.toggled.connect(self._throttled_save_prefs)
         self.outline_thickness_spin.valueChanged.connect(self._throttled_save_prefs)
+        self.fret_index_spin.valueChanged.connect(self._throttled_save_prefs)
+        self.donor_index_spin.valueChanged.connect(self._throttled_save_prefs)
+        self.acceptor_index_spin.valueChanged.connect(self._throttled_save_prefs)
         
         # Setup save preferences timer for throttling
         self._save_prefs_timer = QTimer(self)
@@ -280,60 +303,28 @@ class CellposeSegmentationTab(QWidget):
             widget: Optional widget to add after the label and info icon
             tooltip_text: Help text to show in the tooltip (will be wrapped)
         """
-        from PyQt5.QtWidgets import QHBoxLayout, QLabel, QToolButton, QToolTip
-        from PyQt5.QtCore import Qt, QSize
-        from PyQt5.QtGui import QFontMetrics, QPalette
-        
+        from PyQt5.QtWidgets import QHBoxLayout, QLabel
+
         # Create container widget and layout
         container = QWidget()
         hbox = QHBoxLayout(container)
         hbox.setContentsMargins(0, 0, 0, 0)
         hbox.setSpacing(5)  # Add some spacing between elements
-        
+
         # Add label
         label = QLabel(label_text)
         hbox.addWidget(label, stretch=1)  # Allow label to expand
-        
-        # Configure tooltip styling with HTML for wrapping
-        tooltip_style = """
-            <style>
-                body { 
-                    white-space: pre-wrap; 
-                    max-width: 400px;
-                    font-family: "Segoe UI", Arial, sans-serif;
-                    font-size: 9pt;
-                }
-            </style>
-            <div>%s</div>
-        """ % tooltip_text
-        
-        # Add info button with styled tooltip
-        info_btn = QToolButton()
-        info_btn.setIcon(self.style().standardIcon(getattr(QStyle, 'SP_MessageBoxInformation')))
-        info_btn.setIconSize(QSize(14, 14))  # Slightly smaller icon
-        info_btn.setCursor(Qt.WhatsThisCursor)
-        info_btn.setToolTip(tooltip_style)
-        info_btn.setStyleSheet("""
-            QToolButton {
-                border: none;
-                padding: 0px;
-                margin-left: 2px;
-                background: transparent;
-            }
-            QToolButton:hover {
-                background: rgba(128, 128, 128, 20);
-                border-radius: 7px;
-            }
-        """)
-        hbox.addWidget(info_btn, alignment=Qt.AlignLeft)
-        
+
+        # Shared, theme-aware info control
+        hbox.addWidget(ui_widgets.info_button(tooltip_text), alignment=Qt.AlignLeft)
+
         # Add the widget if provided
         if widget is not None:
             hbox.addWidget(widget, stretch=2)  # Allow widget to take more space
-        
+
         hbox.addStretch()
         layout.addWidget(container)
-        
+
         return container
         
     def dragEnterEvent(self, event: QDragEnterEvent):
@@ -347,7 +338,7 @@ class CellposeSegmentationTab(QWidget):
                 self.drop_hint.show()
             return
                     
-        print("Drag enter ignored - no valid files found")
+        dprint("Drag enter ignored - no valid files found")
         event.ignore()
     
     def dragLeaveEvent(self, event):
@@ -356,40 +347,40 @@ class CellposeSegmentationTab(QWidget):
     
     def dropEvent(self, event: QDropEvent):
         """Handle drop event to load CZI and TIFF files"""
-        print("\n=== Drop Event Triggered ===")
-        print(f"MIME formats: {event.mimeData().formats()}")
+        dprint("\n=== Drop Event Triggered ===")
+        dprint(f"MIME formats: {event.mimeData().formats()}")
         
         if not event.mimeData().hasUrls():
-            print("No URLs in mime data")
+            dprint("No URLs in mime data")
             event.ignore()
             return
             
         # Get list of valid image files
         image_files = []
         urls = event.mimeData().urls()
-        print(f"Number of URLs: {len(urls)}")
+        dprint(f"Number of URLs: {len(urls)}")
         
         for i, url in enumerate(urls):
             try:
                 file_path = url.toLocalFile()
-                print(f"\nProcessing URL {i+1}:")
-                print(f"  - URL: {url.toString()}")
-                print(f"  - Local file: {file_path}")
-                print(f"  - URL scheme: {url.scheme()}")
+                dprint(f"\nProcessing URL {i+1}:")
+                dprint(f"  - URL: {url.toString()}")
+                dprint(f"  - Local file: {file_path}")
+                dprint(f"  - URL scheme: {url.scheme()}")
                 
                 # Skip if no file path
                 if not file_path:
-                    print("  - Skipping: Empty file path")
+                    dprint("  - Skipping: Empty file path")
                     continue
                     
                 # Normalize the path and check if it exists
                 file_path = os.path.abspath(file_path)
                 file_exists = os.path.exists(file_path)
-                print(f"  - Absolute path: {file_path}")
-                print(f"  - File exists: {file_exists}")
+                dprint(f"  - Absolute path: {file_path}")
+                dprint(f"  - File exists: {file_exists}")
                 
                 if not file_exists:
-                    print(f"  - Skipping: File does not exist")
+                    dprint(f"  - Skipping: File does not exist")
                     continue
                     
                 # Check file extension (case insensitive)
@@ -398,74 +389,74 @@ class CellposeSegmentationTab(QWidget):
                 is_tiff = file_path_lower.endswith(('.tif', '.tiff'))
                 
                 if is_czi or is_tiff:
-                    print(f"  - Found {'CZI' if is_czi else 'TIFF'} file")
+                    dprint(f"  - Found {'CZI' if is_czi else 'TIFF'} file")
                     
                     # For CZI files, verify we can open them
                     if is_czi:
                         if not CZI_AVAILABLE:
-                            print("  - Skipping: CZI support not available (install czifile package)")
+                            dprint("  - Skipping: CZI support not available (install czifile package)")
                             continue
                             
                         try:
                             # Quick check if file is a valid CZI
                             with open(file_path, 'rb') as f:
                                 header = f.read(4)
-                                print(f"  - File header: {header}")
+                                dprint(f"  - File header: {header}")
                                 if header != b'ZISR':
-                                    print(f"  - Error: Not a valid CZI file (expected 'ZISR' header)")
+                                    dprint(f"  - Error: Not a valid CZI file (expected 'ZISR' header)")
                                     continue
                                     
                             # Test opening with czifile
-                            print("  - Testing CZI file with czifile...")
+                            dprint("  - Testing CZI file with czifile...")
                             try:
                                 with czifile.CziFile(file_path) as czi:
-                                    print(f"  - Successfully opened CZI file")
-                                    print(f"  - CZI shape: {czi.shape}")
-                                    print(f"  - CZI size: {czi.size}")
+                                    dprint(f"  - Successfully opened CZI file")
+                                    dprint(f"  - CZI shape: {czi.shape}")
+                                    dprint(f"  - CZI size: {czi.size}")
                                     if hasattr(czi, 'metadata'):
-                                        print("  - CZI metadata available")
+                                        dprint("  - CZI metadata available")
                                     else:
-                                        print("  - No CZI metadata available")
+                                        dprint("  - No CZI metadata available")
                                 
                                 # If we got here, the file is valid
-                                print("  - CZI file is valid")
+                                dprint("  - CZI file is valid")
                                 image_files.append(file_path)
                                 
                             except Exception as czierr:
-                                print(f"  - Error opening CZI with czifile: {str(czierr)}")
+                                dprint(f"  - Error opening CZI with czifile: {str(czierr)}")
                                 continue
                                 
                         except Exception as e:
-                            print(f"  - Error checking CZI file: {str(e)}")
+                            dprint(f"  - Error checking CZI file: {str(e)}")
                             continue
                     else:
                         # For TIFF files, just add them
                         image_files.append(file_path)
-                        print(f"  - Added TIFF file")
+                        dprint(f"  - Added TIFF file")
                 else:
-                    print(f"  - Skipping: Unsupported file type")
+                    dprint(f"  - Skipping: Unsupported file type")
                     
             except Exception as e:
-                print(f"  - Error processing file: {str(e)}")
+                dprint(f"  - Error processing file: {str(e)}")
                 continue
         
-        print(f"\nFound {len(image_files)} valid image files to add")
+        dprint(f"\nFound {len(image_files)} valid image files to add")
         
         if not image_files:
-            print("No valid image files found in drop")
+            dprint("No valid image files found in drop")
             QMessageBox.warning(self, "Unsupported File", 
                               "Only CZI, TIFF, and TIF files are supported.")
             event.ignore()
             return
             
-        print("\n=== Adding files to image list ===")
+        dprint("\n=== Adding files to image list ===")
         # Add files to the image list
         self._add_image_paths(image_files)
         event.acceptProposedAction()
         
         # Force UI update
         QApplication.processEvents()
-        print("=== Drop Event Complete ===\n")
+        dprint("=== Drop Event Complete ===\n")
     
     def _convert_czi_to_tiff(self, czi_path):
         """Convert CZI file to 3-frame TIFF stack (FRET, Donor, Acceptor)
@@ -473,7 +464,7 @@ class CellposeSegmentationTab(QWidget):
         Returns:
             str: Path to the saved TIFF file, or None if conversion failed
         """
-        print(f"Converting CZI to TIFF: {czi_path}")
+        dprint(f"Converting CZI to TIFF: {czi_path}")
         
         # Create output path with .tif extension
         base_path = os.path.splitext(czi_path)[0]
@@ -483,7 +474,7 @@ class CellposeSegmentationTab(QWidget):
             # Read the CZI file
             with czifile.CziFile(czi_path) as czi:
                 images = czi.asarray()
-                print(f"CZI shape: {images.shape}")
+                dprint(f"CZI shape: {images.shape}")
                 
                 try:
                     # Extract channels based on the shape
@@ -510,12 +501,12 @@ class CellposeSegmentationTab(QWidget):
                         # Store all channels for 4-frame saving
                         channels = [images[0, 0, i, 0, 0, :, :, 0] for i in range(num_channels)]
                     else:
-                        print(f"Unexpected CZI shape: {images.shape}. Expected 7 or 8 dimensions.")
+                        dprint(f"Unexpected CZI shape: {images.shape}. Expected 7 or 8 dimensions.")
                         return None
                     
                     # Verify we have at least 4 channels
                     if num_channels < 4:
-                        print(f"Expected at least 4 channels, found {num_channels}")
+                        dprint(f"Expected at least 4 channels, found {num_channels}")
                         return None
                     
                     # Convert to float32
@@ -536,78 +527,78 @@ class CellposeSegmentationTab(QWidget):
                         photometric='minisblack',
                         metadata={'axes': 'CYX'}
                     )
-                    print(f"Saved 3-frame TIFF: {output_path}")
+                    dprint(f"Saved 3-frame TIFF: {output_path}")
                     return output_path
                     
                 except IndexError as e:
-                    print(f"Error extracting channels: {e}")
-                    print(f"CZI shape: {images.shape}")
-                    print("Expected shape: [T=1, Scene=1, C=4, Z=1, Y, X, S=1]")
+                    dprint(f"Error extracting channels: {e}")
+                    dprint(f"CZI shape: {images.shape}")
+                    dprint("Expected shape: [T=1, Scene=1, C=4, Z=1, Y, X, S=1]")
                     return None
                     
         except Exception as e:
             import traceback
-            print(f"Error converting CZI to TIFF: {e}")
-            print(traceback.format_exc())
+            dprint(f"Error converting CZI to TIFF: {e}")
+            dprint(traceback.format_exc())
             return None
     
     def _add_image_paths(self, file_paths):
         """Helper method to add image paths to the list"""
-        print("\n=== _add_image_paths ===")
-        print(f"Input file_paths: {file_paths}")
+        dprint("\n=== _add_image_paths ===")
+        dprint(f"Input file_paths: {file_paths}")
         
         if not file_paths:
-            print("No file paths provided")
+            dprint("No file paths provided")
             return
             
         # Initialize image_paths if it doesn't exist
         if not hasattr(self, 'image_paths') or not isinstance(self.image_paths, list):
-            print("Initializing image_paths")
+            dprint("Initializing image_paths")
             self.image_paths = []
         
         # Process each file
         processed_paths = []
         
         # Debug: Print current image_paths
-        print(f"Current image_paths before adding: {self.image_paths}")
+        dprint(f"Current image_paths before adding: {self.image_paths}")
         
         for file_path in file_paths:
             file_path = os.path.abspath(str(file_path))
-            print(f"\nProcessing: {file_path}")
+            dprint(f"\nProcessing: {file_path}")
             
             # Skip if already in list
             if file_path in [os.path.abspath(str(p)) for p in self.image_paths]:
-                print(f"  - Already in list, skipping")
+                dprint(f"  - Already in list, skipping")
                 continue
                 
             # Handle CZI files
             if file_path.lower().endswith('.czi'):
                 if not CZI_AVAILABLE:
-                    print("  - CZI support not available. Install with 'pip install czifile'")
+                    dprint("  - CZI support not available. Install with 'pip install czifile'")
                     continue
                     
                 # Convert CZI to TIFF
                 tiff_path = self._convert_czi_to_tiff(file_path)
                 if tiff_path and os.path.exists(tiff_path):
-                    print(f"  - Converted CZI to TIFF: {tiff_path}")
+                    dprint(f"  - Converted CZI to TIFF: {tiff_path}")
                     processed_paths.append(tiff_path)
                 else:
-                    print(f"  - Failed to convert CZI: {file_path}")
+                    dprint(f"  - Failed to convert CZI: {file_path}")
             
             # Handle TIFF files
             elif file_path.lower().endswith(('.tif', '.tiff')):
                 if os.path.exists(file_path):
-                    print(f"  - Adding TIFF file: {file_path}")
+                    dprint(f"  - Adding TIFF file: {file_path}")
                     processed_paths.append(file_path)
                 else:
-                    print(f"  - File not found: {file_path}")
+                    dprint(f"  - File not found: {file_path}")
             
             else:
-                print(f"  - Unsupported file type: {file_path}")
+                dprint(f"  - Unsupported file type: {file_path}")
         
         if not processed_paths:
             msg = "No valid files to add"
-            print(msg)
+            dprint(msg)
             self.update_status(msg)
             return
         
@@ -621,7 +612,7 @@ class CellposeSegmentationTab(QWidget):
         if self.image_list.count() > 0:
             first_new_index = len(self.image_paths) - len(processed_paths)
             self.image_list.setCurrentRow(first_new_index)
-            print(f"Selected new file at index {first_new_index}")
+            dprint(f"Selected new file at index {first_new_index}")
             
             # Manually trigger selection change to ensure preview updates
             current_item = self.image_list.currentItem()
@@ -630,20 +621,20 @@ class CellposeSegmentationTab(QWidget):
         
         # Update status
         status_msg = f"Added {len(processed_paths)} new image(s)"
-        print(status_msg)
+        dprint(status_msg)
         self.update_status(status_msg)
         
         # Force UI update
         QApplication.processEvents()
-        print("=== End _add_image_paths ===\n")
+        dprint("=== End _add_image_paths ===\n")
         
     def update_image_list_widget(self):
         """Update the image list widget with current image_paths"""
-        print("Updating image list widget...")
-        print(f"Current image_paths: {self.image_paths}")
+        dprint("Updating image list widget...")
+        dprint(f"Current image_paths: {self.image_paths}")
         
         if not hasattr(self, 'image_list'):
-            print("Error: image_list widget doesn't exist!")
+            dprint("Error: image_list widget doesn't exist!")
             return
             
         # Store current selection
@@ -665,17 +656,17 @@ class CellposeSegmentationTab(QWidget):
                     item.setToolTip(path)  # Show full path in tooltip
                     item.setData(Qt.UserRole, path)  # Store full path in item data
                     self.image_list.addItem(item)
-                    print(f"  - Added to list: {display_name}")
+                    dprint(f"  - Added to list: {display_name}")
                     
                 except Exception as e:
-                    print(f"Error adding {path} to list: {str(e)}")
+                    dprint(f"Error adding {path} to list: {str(e)}")
             
             # Restore selection if possible
             if current_path and current_path in self.image_paths:
                 index = self.image_paths.index(current_path)
                 if 0 <= index < self.image_list.count():
                     self.image_list.setCurrentRow(index)
-                    print(f"  - Restored selection to row {index}")
+                    dprint(f"  - Restored selection to row {index}")
             
             # If no selection, select the first item
             if self.image_list.currentRow() < 0 and self.image_list.count() > 0:
@@ -685,7 +676,7 @@ class CellposeSegmentationTab(QWidget):
             # Always unblock signals when done
             self.image_list.blockSignals(False)
             
-        print(f"List widget updated with {self.image_list.count()} items")
+        dprint(f"List widget updated with {self.image_list.count()} items")
         
     def init_ui(self):
         """Initialize the user interface with a stable layout"""
@@ -702,8 +693,8 @@ class CellposeSegmentationTab(QWidget):
         left_widget.setMinimumWidth(300)  # Prevent collapse
         left_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         left_panel = QVBoxLayout(left_widget)
-        left_panel.setContentsMargins(5, 5, 5, 5)
-        left_panel.setSpacing(5)
+        left_panel.setContentsMargins(4, 4, 4, 4)
+        left_panel.setSpacing(9)
 
         # Image list container
         list_container = QVBoxLayout()
@@ -729,29 +720,27 @@ class CellposeSegmentationTab(QWidget):
         self.btn_load = QPushButton("Load Images")
         self.btn_load.clicked.connect(self.load_images)
         self.btn_load.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        ui_widgets.set_button_icon(self.btn_load, "folder")
         button_row.addWidget(self.btn_load)
         self.btn_remove = QPushButton("Remove Selected")
         self.btn_remove.clicked.connect(self.remove_selected_images)
         self.btn_remove.setToolTip("Remove selected images from the list")
         self.btn_remove.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        ui_widgets.set_button_icon(self.btn_remove, "trash")
         button_row.addWidget(self.btn_remove)
+        self.btn_metadata = QPushButton("Metadata")
+        self.btn_metadata.clicked.connect(self.view_metadata)
+        self.btn_metadata.setToolTip("View the metadata / tags of the selected image")
+        self.btn_metadata.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        ui_widgets.set_button_icon(self.btn_metadata, "info")
+        button_row.addWidget(self.btn_metadata)
         button_row.addStretch()
         list_container.addLayout(button_row)
         left_panel.addLayout(list_container)
 
         # Drag-and-drop placeholder
         self.drop_hint = QLabel("Drag & drop TIFF or CZI files here")
-        self.drop_hint.setStyleSheet("""
-            QLabel {
-                color: #666;
-                font-style: italic;
-                padding: 10px;
-                border: 2px dashed #aaa;
-                border-radius: 5px;
-                margin: 5px;
-                text-align: center;
-            }
-        """)
+        self._style_drop_hint()
         self.drop_hint.setAlignment(Qt.AlignCenter)
         self.drop_hint.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.drop_hint.setMinimumHeight(50)  # Reserve space
@@ -769,9 +758,11 @@ class CellposeSegmentationTab(QWidget):
         self.add_roi_btn = QPushButton("Add ROI")
         self.add_roi_btn.clicked.connect(self.start_roi)
         self.add_roi_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        ui_widgets.set_button_icon(self.add_roi_btn, "plus")
         self.del_roi_btn = QPushButton("Delete ROI")
         self.del_roi_btn.clicked.connect(self.delete_selected_roi)
         self.del_roi_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        ui_widgets.set_button_icon(self.del_roi_btn, "trash")
         roi_btn_layout.addWidget(self.add_roi_btn)
         roi_btn_layout.addWidget(self.del_roi_btn)
         roi_btn_layout.addStretch()
@@ -837,40 +828,58 @@ class CellposeSegmentationTab(QWidget):
         self.btn_run = QPushButton("Run Segmentation")
         self.btn_run.clicked.connect(self.on_run_clicked)
         self.btn_run.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.btn_run.setObjectName("primaryButton")
+        ui_widgets.set_button_icon(self.btn_run, "play", on_accent=True)
         self.btn_batch = QPushButton("Batch Segment && Transfer")
         self.btn_batch.clicked.connect(self.batch_segment_and_transfer)
         self.btn_batch.setToolTip("Process all images and transfer to FRET tab with group name")
         self.btn_batch.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        ui_widgets.set_button_icon(self.btn_batch, "layers")
         self.btn_save = QPushButton("Save Results")
         self.btn_save.clicked.connect(self.save_results)
         self.btn_save.setToolTip("Save segmentation results to a 'segmented' directory")
         self.btn_save.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        ui_widgets.set_button_icon(self.btn_save, "save")
         # Create transfer buttons
-        self.btn_save_transfer = QPushButton("Send to FRET Tab")
+        self.btn_save_transfer = QPushButton("FRET Tab")
         self.btn_save_transfer.clicked.connect(self.save_and_transfer)
-        self.btn_save_transfer.setToolTip("Save results and transfer to FRET tab with optional group assignment")
-        self.btn_save_transfer.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; padding: 5px 10px; border: none; }")
-        
-        self.btn_send_donor = QPushButton("Send to Donor")
+        self.btn_save_transfer.setToolTip("Save results and transfer to the FRET tab with optional group assignment")
+        self.btn_save_transfer.setObjectName("successButton")
+        ui_widgets.set_button_icon(self.btn_save_transfer, "send", on_accent=True)
+
+        self.btn_send_donor = QPushButton("Donor")
         self.btn_send_donor.clicked.connect(self.send_to_donor)
-        self.btn_send_donor.setToolTip("Send current image to Donor channel without group assignment")
-        self.btn_send_donor.setStyleSheet("QPushButton { background-color: #2196F3; color: white; padding: 5px 10px; border: none; }")
-        
-        self.btn_send_acceptor = QPushButton("Send to Acceptor")
+        self.btn_send_donor.setToolTip("Send the current image to the Donor channel without group assignment")
+        self.btn_send_donor.setObjectName("primaryButton")
+        ui_widgets.set_button_icon(self.btn_send_donor, "send", on_accent=True)
+
+        self.btn_send_acceptor = QPushButton("Acceptor")
         self.btn_send_acceptor.clicked.connect(self.send_to_acceptor)
-        self.btn_send_acceptor.setToolTip("Send current image to Acceptor channel without group assignment")
-        self.btn_send_acceptor.setStyleSheet("QPushButton { background-color: #F44336; color: white; padding: 5px 10px; border: none; }")
-        
+        self.btn_send_acceptor.setToolTip("Send the current image to the Acceptor channel without group assignment")
+        self.btn_send_acceptor.setObjectName("dangerButton")
+        ui_widgets.set_button_icon(self.btn_send_acceptor, "send", on_accent=True)
+
+        self.btn_send_intensity = QPushButton("Intensity")
+        self.btn_send_intensity.clicked.connect(self.send_to_intensity)
+        self.btn_send_intensity.setToolTip(
+            "Save the current segmentation and add it to the Intensity Analysis tab.\n"
+            "Enable 'Segment both (membrane + whole-cell)' for membrane-vs-whole-cell analysis.")
+        ui_widgets.set_button_icon(self.btn_send_intensity, "send", on_accent=True)
+
         # Set fixed size policy for all buttons
-        for btn in [self.btn_save_transfer, self.btn_send_donor, self.btn_send_acceptor]:
+        for btn in [self.btn_save_transfer, self.btn_send_donor, self.btn_send_acceptor, self.btn_send_intensity]:
             btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         
         # Add buttons to layout with spacing
         transfer_button_layout = QHBoxLayout()
-        transfer_button_layout.addStretch()
+        send_to_label = QLabel("Send to:")
+        send_to_label.setStyleSheet("font-weight: 600;")
+        transfer_button_layout.addWidget(send_to_label)
         transfer_button_layout.addWidget(self.btn_send_donor)
         transfer_button_layout.addSpacing(5)
         transfer_button_layout.addWidget(self.btn_send_acceptor)
+        transfer_button_layout.addSpacing(5)
+        transfer_button_layout.addWidget(self.btn_send_intensity)
         transfer_button_layout.addSpacing(5)
         transfer_button_layout.addWidget(self.btn_save_transfer)
         transfer_button_layout.addStretch()
@@ -933,10 +942,22 @@ class CellposeSegmentationTab(QWidget):
         self.add_info_icon(params_layout, "Min Cell Size:", minsize_container,
                          "Minimum size of objects to keep (in pixels). Smaller objects will be removed.")
         self.outline_check = QCheckBox("Generate outlines only")
-        self.outline_check.setChecked(True)
+        self.outline_check.setChecked(False)
         self.outline_check.setToolTip("When checked, only cell outlines will be generated instead of filled masks.")
         self.outline_check.toggled.connect(self.update_outline_controls)
         params_layout.addRow(self.outline_check)
+        # "Segment both" writes a combined stack [outline, filled, ...raw channels]
+        # for the Intensity/Densitometry tab (membrane vs whole-cell). It does not
+        # follow the FRET channel-order registry; raw frames are kept in input order.
+        self.both_check = QCheckBox("Segment both (membrane + whole-cell)")
+        self.both_check.setChecked(False)
+        self.both_check.setToolTip(
+            "When checked, saving/sending writes a single stack laid out as\n"
+            "[outline, filled, ...raw channels] for the Intensity Analysis tab.\n"
+            "The whole-cell mask is used for display and ROI editing; the outline\n"
+            "(membrane) is derived from it at save time using the outline thickness.")
+        self.both_check.toggled.connect(self.update_outline_controls)
+        params_layout.addRow(self.both_check)
         self.outline_thickness_check = QCheckBox("Adjust outline thickness")
         self.outline_thickness_check.setChecked(True)
         self.outline_thickness_check.setToolTip("When checked, you can adjust the thickness of the cell outlines.")
@@ -956,6 +977,38 @@ class CellposeSegmentationTab(QWidget):
         params_group.setLayout(params_layout)
         left_panel.addWidget(params_group)
 
+        # Channel-order registry: lets the user declare which frame of their raw
+        # input stack is FRET / Donor / Acceptor. Segmentation reorders the saved
+        # stack to the canonical [label, FRET, Donor, Acceptor] the BT and FRET
+        # tabs expect, so the analysis stays correct regardless of acquisition order.
+        channel_group = QGroupBox("Channel Order (input frames)")
+        channel_layout = QFormLayout()
+        channel_layout.setSpacing(5)
+        channel_layout.setLabelAlignment(Qt.AlignRight)
+
+        def _make_channel_spin(default_value):
+            spin = QSpinBox()
+            spin.setRange(0, 63)
+            spin.setValue(default_value)
+            spin.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            return spin
+
+        self.fret_index_spin = _make_channel_spin(0)
+        self.donor_index_spin = _make_channel_spin(1)
+        self.acceptor_index_spin = _make_channel_spin(2)
+        self.add_info_icon(channel_layout, "FRET frame:", self.fret_index_spin,
+                           "0-based frame index of the FRET channel in your raw input stack.")
+        self.add_info_icon(channel_layout, "Donor frame:", self.donor_index_spin,
+                           "0-based frame index of the Donor channel in your raw input stack.")
+        self.add_info_icon(channel_layout, "Acceptor frame:", self.acceptor_index_spin,
+                           "0-based frame index of the Acceptor channel (used for 4-channel / S3-S4 data).")
+        channel_note = QLabel("Saved as: [label, FRET, Donor, Acceptor]")
+        channel_note.setWordWrap(True)
+        channel_note.setStyleSheet("font-style: italic;")
+        channel_layout.addRow(channel_note)
+        channel_group.setLayout(channel_layout)
+        left_panel.addWidget(channel_group)
+
         # Right panel - Image display
         right_widget = QWidget()
         right_widget.setMinimumWidth(400)  # Prevent collapse
@@ -972,44 +1025,16 @@ class CellposeSegmentationTab(QWidget):
         palette = app.palette()
         is_dark_theme = palette.window().color().lightness() < 128
         
-        # Set matplotlib style based on theme
-        if is_dark_theme:
-            plt.style.use('dark_background')
-            # Additional dark theme settings
-            plt.rcParams.update({
-                'figure.facecolor': '#2b2b2b',
-                'axes.facecolor': '#2b2b2b',
-                'savefig.facecolor': '#2b2b2b',
-                'text.color': '#f0f0f0',
-                'axes.labelcolor': '#f0f0f0',
-                'xtick.color': '#f0f0f0',
-                'ytick.color': '#f0f0f0',
-                'axes.edgecolor': '#6d6d6d',
-                'grid.color': '#3a3a3a',
-                'figure.titlesize': 'large',
-                'figure.titleweight': 'bold',
-                'axes.titlesize': 'medium',
-                'axes.titleweight': 'bold',
-                'xtick.labelsize': 'small',
-                'ytick.labelsize': 'small',
-                'legend.framealpha': 0.8,
-                'legend.facecolor': '#3a3a3a',
-                'legend.edgecolor': '#6d6d6d',
-            })
-        
+        # Set matplotlib rcParams from the central design system so plots match
+        # the current theme (no global plt.style.use, which would leak into
+        # every other tab's figures).
+        theme_name = 'dark' if is_dark_theme else 'light'
+        theme_system.apply_matplotlib_style(theme_name)
+
         # Create figure with theme-appropriate colors
         self.figure, (self.ax1, self.ax2) = plt.subplots(2, 1, figsize=(8, 8), num=fig_num)
-        
-        # Set figure and axes background colors based on theme
-        if is_dark_theme:
-            self.figure.set_facecolor('#2b2b2b')
-            for ax in [self.ax1, self.ax2]:
-                ax.set_facecolor('#2b2b2b')
-        else:
-            self.figure.set_facecolor('white')
-            for ax in [self.ax1, self.ax2]:
-                ax.set_facecolor('white')
-        
+        theme_system.apply_figure_theme(self.figure, theme_name)
+
         # Adjust spacing between subplots
         self.figure.subplots_adjust(hspace=0.3)
         self.canvas = FigureCanvas(self.figure)
@@ -1035,11 +1060,11 @@ class CellposeSegmentationTab(QWidget):
     def save_preferences(self):
         """Save current preferences to config manager"""
         if not self.config:
-            print("Config manager not available, cannot save preferences")
+            dprint("Config manager not available, cannot save preferences")
             return False
             
         try:
-            print("Saving preferences to config...")
+            dprint("Saving preferences to config...")
             
             # Get current UI values
             model = self.model_combo.currentText()
@@ -1048,10 +1073,11 @@ class CellposeSegmentationTab(QWidget):
             cellprob_threshold = self.cellprob_spin.value()
             min_size = self.minsize_spin.value()
             outline_only = self.outline_check.isChecked()
+            segment_both = self.both_check.isChecked()
             adjust_outline = self.outline_thickness_check.isChecked()
             outline_thickness = self.outline_thickness_spin.value()
             
-            print(f"Saving preferences: model={model}, diameter={diameter}, flow={flow_threshold}, "
+            dprint(f"Saving preferences: model={model}, diameter={diameter}, flow={flow_threshold}, "
                   f"cellprob={cellprob_threshold}, min_size={min_size}, outline_only={outline_only}, "
                   f"adjust_outline={adjust_outline}, outline_thickness={outline_thickness}")
             
@@ -1066,36 +1092,42 @@ class CellposeSegmentationTab(QWidget):
             self.config.set('cellpose.parameters.cellprob_threshold', float(cellprob_threshold))
             self.config.set('cellpose.parameters.min_size', int(min_size))
             self.config.set('cellpose.display.outline_only', bool(outline_only))
+            self.config.set('cellpose.display.segment_both', bool(segment_both))
             self.config.set('cellpose.display.adjust_outline', bool(adjust_outline))
             self.config.set('cellpose.display.outline_thickness', int(outline_thickness))
-            
+
+            # Save channel-order registry (which raw input frame is each channel)
+            self.config.set('cellpose.channels.fret_index', int(self.fret_index_spin.value()))
+            self.config.set('cellpose.channels.donor_index', int(self.donor_index_spin.value()))
+            self.config.set('cellpose.channels.acceptor_index', int(self.acceptor_index_spin.value()))
+
             # Save window state and geometry if available
             if hasattr(self, 'saveGeometry'):
                 try:
                     self.config.set('cellpose.window.geometry', bytes(self.saveGeometry()).hex())
                 except Exception as e:
-                    print(f"Warning: Could not save window geometry: {e}")
+                    dprint(f"Warning: Could not save window geometry: {e}")
             
             # Save splitter state if available
             if hasattr(self, 'splitter') and self.splitter:
                 try:
                     self.config.set('cellpose.window.splitter_state', bytes(self.splitter.saveState()).hex())
                 except Exception as e:
-                    print(f"Warning: Could not save splitter state: {e}")
+                    dprint(f"Warning: Could not save splitter state: {e}")
             
             # Save to disk
             success = self.config.sync()
             if success:
-                print("Preferences saved successfully")
+                dprint("Preferences saved successfully")
             else:
-                print("Warning: Failed to sync preferences to disk")
+                dprint("Warning: Failed to sync preferences to disk")
                 
             return success
             
         except Exception as e:
             import traceback
-            print(f"Error saving preferences: {e}")
-            print(traceback.format_exc())
+            dprint(f"Error saving preferences: {e}")
+            dprint(traceback.format_exc())
             return False
     
     def _throttled_save_prefs(self):
@@ -1122,16 +1154,16 @@ class CellposeSegmentationTab(QWidget):
                     self.splitter.restoreState(bytes.fromhex(splitter_state))
                     
         except Exception as e:
-            print(f"Error restoring window state: {e}")
+            dprint(f"Error restoring window state: {e}")
     
     def load_preferences(self):
         """Load preferences from config manager"""
         if not self.config:
-            print("Config manager not available")
+            dprint("Config manager not available")
             return
             
         try:
-            print("Loading preferences from config...")
+            dprint("Loading preferences from config...")
             
             # Load display settings with defaults
             self.brightness = float(self.config.get('cellpose.display.brightness', 1.0))
@@ -1154,10 +1186,16 @@ class CellposeSegmentationTab(QWidget):
             cellprob_threshold = float(self.config.get('cellpose.parameters.cellprob_threshold', self.default_params['cellprob_threshold']))
             min_size = int(self.config.get('cellpose.parameters.min_size', self.default_params['min_size']))
             outline_only = bool(self.config.get('cellpose.display.outline_only', self.default_params['outline_only']))
+            segment_both = bool(self.config.get('cellpose.display.segment_both', self.default_params['segment_both']))
             adjust_outline = bool(self.config.get('cellpose.display.adjust_outline', self.default_params['adjust_outline']))
             outline_thickness = int(self.config.get('cellpose.display.outline_thickness', self.default_params['outline_thickness']))
-            
-            print(f"Loaded preferences: model={model}, diameter={diameter}, flow={flow_threshold}, "
+
+            # Load channel-order registry with defaults
+            fret_index = int(self.config.get('cellpose.channels.fret_index', self.default_params['fret_index']))
+            donor_index = int(self.config.get('cellpose.channels.donor_index', self.default_params['donor_index']))
+            acceptor_index = int(self.config.get('cellpose.channels.acceptor_index', self.default_params['acceptor_index']))
+
+            dprint(f"Loaded preferences: model={model}, diameter={diameter}, flow={flow_threshold}, "
                   f"cellprob={cellprob_threshold}, min_size={min_size}, outline_only={outline_only}, "
                   f"adjust_outline={adjust_outline}, outline_thickness={outline_thickness}")
             
@@ -1168,24 +1206,32 @@ class CellposeSegmentationTab(QWidget):
             self.cellprob_spin.blockSignals(True)
             self.minsize_spin.blockSignals(True)
             self.outline_check.blockSignals(True)
+            self.both_check.blockSignals(True)
             self.outline_thickness_check.blockSignals(True)
             self.outline_thickness_spin.blockSignals(True)
-            
+            self.fret_index_spin.blockSignals(True)
+            self.donor_index_spin.blockSignals(True)
+            self.acceptor_index_spin.blockSignals(True)
+
             # Update UI controls
             index = self.model_combo.findText(model)
             if index >= 0:
                 self.model_combo.setCurrentIndex(index)
             else:
-                print(f"Warning: Model '{model}' not found in combo box")
+                dprint(f"Warning: Model '{model}' not found in combo box")
                 
             self.diameter_spin.setValue(diameter)
             self.flow_spin.setValue(flow_threshold)
             self.cellprob_spin.setValue(cellprob_threshold)
             self.minsize_spin.setValue(min_size)
             self.outline_check.setChecked(outline_only)
+            self.both_check.setChecked(segment_both)
             self.outline_thickness_check.setChecked(adjust_outline)
             self.outline_thickness_spin.setValue(outline_thickness)
-            
+            self.fret_index_spin.setValue(fret_index)
+            self.donor_index_spin.setValue(donor_index)
+            self.acceptor_index_spin.setValue(acceptor_index)
+
             # Update internal state
             self.update_outline_controls()
             
@@ -1196,15 +1242,19 @@ class CellposeSegmentationTab(QWidget):
             self.cellprob_spin.blockSignals(False)
             self.minsize_spin.blockSignals(False)
             self.outline_check.blockSignals(False)
+            self.both_check.blockSignals(False)
             self.outline_thickness_check.blockSignals(False)
             self.outline_thickness_spin.blockSignals(False)
-            
-            print("Preferences loaded successfully")
+            self.fret_index_spin.blockSignals(False)
+            self.donor_index_spin.blockSignals(False)
+            self.acceptor_index_spin.blockSignals(False)
+
+            dprint("Preferences loaded successfully")
             
         except Exception as e:
             import traceback
-            print(f"Error loading preferences: {e}")
-            print(traceback.format_exc())
+            dprint(f"Error loading preferences: {e}")
+            dprint(traceback.format_exc())
     
     def setup_fret_tab_access(self):
         """Ensure the FRET tab is accessible from this tab"""
@@ -1231,7 +1281,7 @@ class CellposeSegmentationTab(QWidget):
                         break
                         
         except Exception as e:
-            print(f"Warning: Could not set up FRET tab access: {str(e)}")
+            dprint(f"Warning: Could not set up FRET tab access: {str(e)}")
             
     def initialize_model(self):
         """Initialize the Cellpose model"""
@@ -1248,8 +1298,8 @@ class CellposeSegmentationTab(QWidget):
             else:
                 raise ImportError("Could not find Cellpose model class. Please check your Cellpose installation.")
                 
-            print(f"Initialized Cellpose model: {model_type}")
-            print(f"Using GPU: {use_gpu}")
+            dprint(f"Initialized Cellpose model: {model_type}")
+            dprint(f"Using GPU: {use_gpu}")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to initialize Cellpose model: {str(e)}")
             self.model = None
@@ -1266,7 +1316,104 @@ class CellposeSegmentationTab(QWidget):
         )
         
         self._add_image_paths(files)
-    
+
+    def view_metadata(self):
+        """Show the metadata dialog for the currently selected image."""
+        path = getattr(self, 'current_image_path', None)
+        if not path:
+            row = self.image_list.currentRow()
+            if 0 <= row < len(self.image_paths):
+                path = str(self.image_paths[row])
+        ui_widgets.show_metadata_dialog(self, path)
+
+    def _channel_registry(self):
+        """Return the (FRET, Donor, Acceptor) input-frame indices from the
+        channel-order UI, defaulting to the canonical 0/1/2 if not built yet."""
+        if hasattr(self, 'fret_index_spin'):
+            return (self.fret_index_spin.value(),
+                    self.donor_index_spin.value(),
+                    self.acceptor_index_spin.value())
+        return (0, 1, 2)
+
+    def _ordered_analysis_frames(self, original_frames):
+        """Reorder the raw input frames into the canonical FRET, Donor, Acceptor
+        order declared in the channel registry.
+
+        Returns a list of frames (the caller prepends the label), so the saved
+        stack becomes ``[label, FRET, Donor, Acceptor]`` — the layout the BT and
+        FRET tabs expect. Out-of-range indices are skipped (with a status note)
+        so a short stack still saves. With the default 0/1/2 mapping on a
+        3-frame input this reproduces the previous output exactly.
+        """
+        if isinstance(original_frames, np.ndarray) and original_frames.ndim == 2:
+            frames = [original_frames]
+        else:
+            frames = list(original_frames)
+        n = len(frames)
+
+        ordered, missing = [], []
+        for name, idx in zip(("FRET", "Donor", "Acceptor"), self._channel_registry()):
+            if 0 <= idx < n:
+                ordered.append(frames[idx])
+            else:
+                missing.append(f"{name}={idx}")
+        if not ordered:
+            # Never produce an empty stack; fall back to the original order.
+            ordered = frames
+        if missing:
+            self.update_status(
+                "Channel order: frame index out of range for " + ", ".join(missing)
+                + f" (stack has {n} frame(s)); skipped.")
+        return ordered
+
+    def _labels_to_outline(self, filled_labels, thickness=None):
+        """Convert a filled label mask into an inward membrane-band label mask.
+
+        For each cell the band starts at the cell border and grows *inward* by
+        ``thickness`` pixels, so the whole band lies **inside** the cell —
+        ``band = mask AND NOT erode(mask, thickness)``. This is the physically
+        correct membrane region: unlike an outline drawn centred on the boundary
+        (cv2.drawContours), no band pixel falls outside the cell. Erosion is done
+        per label, so touching cells keep separate, correctly-labelled bands and
+        the Intensity tab can pair membrane and whole-cell per cell.
+        """
+        if thickness is None:
+            thickness = self.outline_thickness_spin.value() if hasattr(self, 'outline_thickness_spin') else 1
+        thickness = max(1, int(thickness))
+        outlines = np.zeros_like(filled_labels, dtype=np.uint16)
+        for label_id in np.unique(filled_labels):
+            if label_id == 0:  # Skip background
+                continue
+            mask = filled_labels == label_id
+            eroded = binary_erosion(mask, iterations=thickness)
+            band = mask & ~eroded  # border pixels going inward by `thickness`
+            outlines[band] = int(label_id)
+        return outlines
+
+    def _both_stack_frames(self, filled_labels, original_img):
+        """Assemble the combined ``[outline, filled, ...raw channels]`` stack for
+        the Intensity/Densitometry tab (membrane vs whole-cell).
+
+        The outline (membrane) is derived from ``filled_labels`` so the two masks
+        share label ids. Raw frames are kept in their original input order — this
+        path is intentionally NOT reordered by the FRET channel registry, since
+        the Intensity tab declares its own channel layout.
+        """
+        outline = self._labels_to_outline(filled_labels)
+        frames = [outline.astype(np.uint16), np.asarray(filled_labels).astype(np.uint16)]
+        if original_img is not None:
+            if isinstance(original_img, np.ndarray) and original_img.ndim == 2:
+                raw_frames = [original_img]
+            else:
+                raw_frames = list(original_img)
+            for frame in raw_frames:
+                frames.append(intensity_to_uint16(frame))
+        return frames
+
+    def _segment_both_enabled(self):
+        """True when the 'Segment both (membrane + whole-cell)' option is on."""
+        return getattr(self, 'both_check', None) is not None and self.both_check.isChecked()
+
     def on_image_selected(self, current, previous=None):
         """Handle selection of an image from the list.
         
@@ -1306,8 +1453,22 @@ class CellposeSegmentationTab(QWidget):
         # Save as TIFF
         tifffile.imwrite(temp_path, czi_data, photometric='minisblack',
                         metadata={'axes': 'CYX'})
-        print(f"Saved CZI data as temporary TIFF: {temp_path}")
+        dprint(f"Saved CZI data as temporary TIFF: {temp_path}")
+        # Track for cleanup so converted-CZI temp files don't accumulate on disk.
+        if not hasattr(self, '_temp_files'):
+            self._temp_files = []
+        self._temp_files.append(temp_path)
         return temp_path
+
+    def _cleanup_temp_files(self):
+        """Delete any temporary TIFFs created from CZI conversions."""
+        for path in getattr(self, '_temp_files', []):
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except OSError as e:
+                dprint(f"Could not remove temp file {path}: {e}")
+        self._temp_files = []
     
     def load_current_image(self):
         """Load and display the currently selected image"""
@@ -1321,15 +1482,15 @@ class CellposeSegmentationTab(QWidget):
             self.current_image_has_segmentation = False
             
             # All files should be TIFF at this point
-            print(f"\n=== Loading image: {self.current_image_path} ===")
+            dprint(f"\n=== Loading image: {self.current_image_path} ===")
             
             # Read TIFF file (could be multi-frame)
             img = tifffile.imread(self.current_image_path)
-            print(f"Loaded TIFF with shape: {img.shape}")
+            dprint(f"Loaded TIFF with shape: {img.shape}")
             
             # Handle multi-frame TIFF (should be 3 frames: FRET, Donor, Acceptor)
             if len(img.shape) == 3:
-                print(f"Multi-frame TIFF detected with {img.shape[0]} frames")
+                dprint(f"Multi-frame TIFF detected with {img.shape[0]} frames")
                 
                 # Store all frames for saving later
                 self.original_tiff_data = img
@@ -1337,7 +1498,7 @@ class CellposeSegmentationTab(QWidget):
                 # Find and use the best frame (highest mean intensity) for display and segmentation
                 best_frame, best_idx = self.get_best_frame(img)
                 img = best_frame
-                print(f"Using frame {best_idx} (0-based) with highest mean intensity for segmentation")
+                dprint(f"Using frame {best_idx} (0-based) with highest mean intensity for segmentation")
             
             # Convert to float32 and normalize to 0-1
             img = img.astype(np.float32)
@@ -1346,7 +1507,7 @@ class CellposeSegmentationTab(QWidget):
             # Store the original normalized image
             self.current_image = img_normalized
             
-            print(f"Image loaded successfully, shape: {self.current_image.shape}")
+            dprint(f"Image loaded successfully, shape: {self.current_image.shape}")
             
             # Display the image
             self.update_display(img_normalized)
@@ -1382,26 +1543,61 @@ class CellposeSegmentationTab(QWidget):
         return best_frame if best_frame is not None else img
         
     def on_brightness_changed(self, value):
-        """Handle brightness slider change with throttling"""
+        """Handle brightness slider change (fast, throttled base-image update)."""
         self.brightness = value / 100.0
         self.brightness_value.setText(f"{value}%")
-        if not hasattr(self, '_last_update') or time.time() - self._last_update > 0.1:  # 100ms throttle
-            self._last_update = time.time()
-            if hasattr(self, 'current_image') and self.current_image is not None:
-                self.update_display(self.current_image, keep_rois=True)
-            # Mark preferences as dirty instead of saving immediately
-            self._prefs_dirty = True
-    
+        self._prefs_dirty = True
+        self._schedule_bc_update()
+
     def on_contrast_changed(self, value):
-        """Handle contrast slider change with throttling"""
+        """Handle contrast slider change (fast, throttled base-image update)."""
         self.contrast = value / 100.0
         self.contrast_value.setText(f"{value}%")
-        if not hasattr(self, '_last_update') or time.time() - self._last_update > 0.1:  # 100ms throttle
-            self._last_update = time.time()
-            if hasattr(self, 'current_image') and self.current_image is not None:
+        self._prefs_dirty = True
+        self._schedule_bc_update()
+
+    def _schedule_bc_update(self):
+        """Rate-limit brightness/contrast redraws with a trailing update so the
+        final slider value is always shown (the old time-throttle could drop it)."""
+        timer = getattr(self, '_bc_timer', None)
+        if timer is None:
+            self._bc_timer = timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self._flush_bc_update)
+            self._bc_pending = False
+        if timer.isActive():
+            self._bc_pending = True
+        else:
+            self._apply_brightness_contrast()
+            timer.start(30)
+
+    def _flush_bc_update(self):
+        if getattr(self, '_bc_pending', False):
+            self._bc_pending = False
+            self._apply_brightness_contrast()
+            self._bc_timer.start(30)
+
+    def _apply_brightness_contrast(self):
+        """Re-apply brightness/contrast to *only* the base image artist.
+
+        This skips the expensive parts of update_display (rebuilding the colored
+        mask overlay, regionprops labels, tight_layout), so dragging the sliders
+        stays smooth even with many ROIs.
+        """
+        base = getattr(self, '_disp_norm_base', None)
+        img_artist = getattr(self, '_ax1_image', None)
+        if base is None or img_artist is None or getattr(self, 'current_image', None) is None:
+            if getattr(self, 'current_image', None) is not None:
                 self.update_display(self.current_image, keep_rois=True)
-            # Mark preferences as dirty instead of saving immediately
-            self._prefs_dirty = True
+            return
+        contrast = getattr(self, 'contrast', 1.0) * 4.0
+        brightness = getattr(self, 'brightness', 0.5) - 0.5
+        img = np.clip((base - 0.5) * contrast + 0.5 + brightness, 0.0, 1.0)
+        gamma = getattr(self, 'gamma', 0.5) * 2.0
+        if gamma != 1.0:
+            img = np.power(img, 1.0 / max(gamma, 0.1))
+        img_artist.set_data((img * 255).astype(np.uint8))
+        self.canvas.draw_idle()
     
     def auto_adjust_display(self):
         """Automatically adjust brightness and contrast for optimal image display.
@@ -1476,7 +1672,7 @@ class CellposeSegmentationTab(QWidget):
             self.update_display_settings()
             
         except Exception as e:
-            print(f"Error in auto-adjust: {str(e)}")
+            dprint(f"Error in auto-adjust: {str(e)}")
             import traceback
             traceback.print_exc()
     
@@ -1531,6 +1727,17 @@ class CellposeSegmentationTab(QWidget):
         # Convert back to 8-bit
         return (img_float * 255).astype(np.uint8)
     
+    def _label_overlay_cmap(self):
+        """A cached 256-colour HSV colormap (alpha 0.5) for the label overlay."""
+        cmap = getattr(self, '_overlay_cmap', None)
+        if cmap is None:
+            import matplotlib
+            from matplotlib.colors import ListedColormap
+            colours = matplotlib.colormaps['hsv'].resampled(256)(np.arange(256))
+            colours[:, 3] = 0.5  # semi-transparent so the base image shows through
+            self._overlay_cmap = cmap = ListedColormap(colours)
+        return cmap
+
     def update_display(self, img, mask=None, keep_rois=False):
         """Update the image display with the current image and optional mask
         
@@ -1539,36 +1746,10 @@ class CellposeSegmentationTab(QWidget):
             mask: Optional segmentation mask
             keep_rois: If True, preserve existing ROIs when updating display
         """
-        # Update plot colors based on current theme
-        app = QApplication.instance()
-        palette = app.palette()
-        is_dark_theme = palette.window().color().lightness() < 128
-        
-        # Set appropriate colors based on theme
-        if is_dark_theme:
-            text_color = '#f0f0f0'
-            bg_color = '#2b2b2b'
-            grid_color = '#3a3a3a'
-            edge_color = '#6d6d6d'
-        else:
-            text_color = 'black'
-            bg_color = 'white'
-            grid_color = '#e0e0e0'
-            edge_color = '#cccccc'
-            
-        # Update figure and axes colors
+        # Update figure and axes colors to match the current application theme
+        theme_name = theme_system.current_theme_name()
         if hasattr(self, 'figure') and self.figure:
-            self.figure.set_facecolor(bg_color)
-            for ax in [self.ax1, self.ax2]:
-                if ax:
-                    ax.set_facecolor(bg_color)
-                    ax.tick_params(colors=text_color)
-                    for spine in ax.spines.values():
-                        spine.set_edgecolor(edge_color)
-                    ax.xaxis.label.set_color(text_color)
-                    ax.yaxis.label.set_color(text_color)
-                    ax.title.set_color(text_color)
-                    ax.grid(color=grid_color, alpha=0.3)
+            theme_system.apply_figure_theme(self.figure, theme_name)
         try:
             # Clear the axes
             self.ax1.clear()
@@ -1581,11 +1762,18 @@ class CellposeSegmentationTab(QWidget):
             if not hasattr(self, 'current_image') or not keep_rois:
                 self.current_image = display_img.copy()
             
+            # Cache a normalised copy of the base image so brightness/contrast
+            # can be re-applied cheaply (see _apply_brightness_contrast) without
+            # rebuilding the whole display.
+            base = self.current_image.astype(np.float32)
+            mn, mx = float(base.min()), float(base.max())
+            self._disp_norm_base = (base - mn) / (mx - mn) if mx > mn else np.zeros_like(base)
+
             # Apply display settings to the original image
             display_img = self.apply_display_effects(self.current_image)
-            
-            # Display the processed image
-            self.ax1.imshow(display_img, cmap='gray', vmin=0, vmax=255)
+
+            # Display the processed image (keep the artist for fast updates)
+            self._ax1_image = self.ax1.imshow(display_img, cmap='gray', vmin=0, vmax=255)
             self.ax1.set_title("Original Image")
             self.ax1.axis('off')
             
@@ -1598,30 +1786,24 @@ class CellposeSegmentationTab(QWidget):
             
             # Display current labels if available
             if self.current_labels is not None and np.any(self.current_labels > 0):
-                # Create a colored mask overlay
-                from matplotlib.colors import ListedColormap
                 from skimage.measure import regionprops
-                
-                cmap = plt.cm.get_cmap('hsv', 256)
-                mask_colored = np.zeros((*self.current_labels.shape, 4))
-                
-                for label_id in np.unique(self.current_labels):
-                    if label_id == 0:  # Skip background
-                        continue
-                    mask_colored[self.current_labels == label_id] = cmap(label_id % 256)
-                
-                # Set alpha for the mask
-                mask_colored[..., 3] = (self.current_labels > 0).astype(float) * 0.5
-                self.ax2.imshow(mask_colored)
-                
-                # Add region numbers
-                regions = regionprops(self.current_labels.astype(np.int32))
-                
-                # Add region labels
-                for region in regions:
-                    y, x = region.centroid
-                    self.ax2.text(x, y, str(region.label), color='red', ha='center', va='center',
-                               bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=1))
+
+                # Overlay the labels as a masked array coloured on the fly by a
+                # cached colormap. This avoids allocating a full float64 (H, W, 4)
+                # RGBA array (hundreds of MB for large images) and the per-label
+                # Python loop that the previous implementation rebuilt every call.
+                labels = self.current_labels
+                overlay = np.ma.masked_where(labels == 0, labels % 256)
+                self.ax2.imshow(overlay, cmap=self._label_overlay_cmap(),
+                                vmin=0, vmax=255, interpolation='nearest')
+
+                # Add region numbers (skip when too dense to be readable).
+                regions = regionprops(labels.astype(np.int32))
+                if len(regions) <= 250:
+                    for region in regions:
+                        y, x = region.centroid
+                        self.ax2.text(x, y, str(region.label), color='red', ha='center', va='center',
+                                   bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=1))
             
             # Set titles and axis
             self.ax2.set_title("Segmentation Mask")
@@ -1634,20 +1816,34 @@ class CellposeSegmentationTab(QWidget):
             self.canvas.draw_idle()
             
         except Exception as e:
-            print(f"Error updating display: {str(e)}")
+            dprint(f"Error updating display: {str(e)}")
             import traceback
             traceback.print_exc()
     
     def update_outline_controls(self):
         """Update the state of outline controls based on checkboxes"""
+        both_enabled = getattr(self, 'both_check', None) is not None and self.both_check.isChecked()
+
+        # "Segment both" takes precedence: the whole-cell mask is shown/edited and
+        # the outline is derived at save time, so "outlines only" is not meaningful
+        # while it is on.
+        if both_enabled and self.outline_check.isChecked():
+            self.outline_check.blockSignals(True)
+            self.outline_check.setChecked(False)
+            self.outline_check.blockSignals(False)
+        self.outline_check.setEnabled(not both_enabled)
+
         outlines_enabled = self.outline_check.isChecked()
-        thickness_enabled = outlines_enabled and self.outline_thickness_check.isChecked()
-        
-        self.outline_thickness_check.setEnabled(outlines_enabled)
+        # The outline thickness is needed whenever an outline is produced — either
+        # in outline-only mode or as the membrane frame of a "both" stack.
+        needs_outline = outlines_enabled or both_enabled
+        thickness_enabled = needs_outline and self.outline_thickness_check.isChecked()
+
+        self.outline_thickness_check.setEnabled(needs_outline)
         self.outline_thickness_spin.setEnabled(thickness_enabled)
-        
-        # If outlines are disabled, uncheck thickness checkbox
-        if not outlines_enabled:
+
+        # If no outline is produced at all, uncheck the thickness checkbox
+        if not needs_outline:
             self.outline_thickness_check.setChecked(False)
     
     # Drag and drop event handlers - using the consolidated dragEnterEvent above
@@ -1710,7 +1906,7 @@ class CellposeSegmentationTab(QWidget):
                     label_id = int(label_text.split()[1])
                 deleted_labels.add(label_id)
             except (IndexError, ValueError) as e:
-                print(f"Error parsing ROI label: {e}")
+                dprint(f"Error parsing ROI label: {e}")
                 continue
         
         # Second pass: remove all selected labels
@@ -1749,527 +1945,459 @@ class CellposeSegmentationTab(QWidget):
                 
         self.current_labels = new_labels
     
+    # ==================================================================
+    # ROI drawing panel
+    #
+    # Interaction model (why node edits no longer spawn ROIs):
+    #   matplotlib's PolygonSelector fires ``onselect`` on *every* change to a
+    #   completed polygon (including dragging a vertex). We therefore treat that
+    #   callback as "the pending shape changed" -- it never writes to the label
+    #   image. A shape is only rasterised into ``current_labels`` when the user
+    #   explicitly clicks "Add This ROI", which then clears the selector for the
+    #   next shape. Nodes can be adjusted freely with no side effects.
+    # ==================================================================
     def reset_roi_view(self):
         """Reset the ROI view to show the entire image."""
-        if hasattr(self, 'roi_ax') and hasattr(self, 'roi_canvas'):
-            self.roi_ax.set_xlim(0, self.current_labels.shape[1] if hasattr(self, 'current_labels') else 1000)
-            self.roi_ax.set_ylim(self.current_labels.shape[0] if hasattr(self, 'current_labels') else 1000, 0)
-            self.roi_canvas.draw_idle()
-    
-    def update_roi_display(self):
-        """Update the ROI display with current brightness/contrast settings."""
-        if not hasattr(self, 'original_display_img') or not hasattr(self, 'roi_image'):
+        if getattr(self, 'roi_ax', None) is None or getattr(self, 'roi_canvas', None) is None:
             return
-            
-        # Get current slider values
-        brightness = self.brightness_slider.value() / 100.0  # Convert to -1.0 to 1.0 range
-        contrast = self.contrast_slider.value() / 100.0  # Convert to -1.0 to 1.0 range
-        
-        # Apply brightness and contrast
-        img = self.original_display_img.astype(float)
-        img = (img - img.min()) / (img.max() - img.min() + 1e-8)  # Normalize to 0-1
-        
-        # Apply contrast (contrast * (x - 0.5) + 0.5)
-        if contrast >= 0:
-            img = (1 + contrast) * (img - 0.5) + 0.5
+        if getattr(self, 'current_labels', None) is not None:
+            shape = self.current_labels.shape
+        elif getattr(self, 'original_display_img', None) is not None:
+            shape = self.original_display_img.shape
         else:
-            img = (1 + contrast) * img + 0.5 * (1 - contrast)
-            
-        # Apply brightness
-        img = img + brightness
-        
-        # Clip to valid range
-        img = np.clip(img, 0, 1)
-        
-        # Update the image data
-        self.roi_image.set_array(img)
-        self.display_img = (img * 255).astype(np.uint8)  # Update display_img for ROI drawing
+            shape = (1000, 1000)
+        self.roi_ax.set_xlim(0, shape[1])
+        self.roi_ax.set_ylim(shape[0], 0)
         self.roi_canvas.draw_idle()
-    
-    def reset_roi_adjustments(self):
-        """Reset brightness and contrast sliders to default values."""
-        if hasattr(self, 'brightness_slider') and hasattr(self, 'contrast_slider'):
-            self.brightness_slider.blockSignals(True)
-            self.contrast_slider.blockSignals(True)
-            
-            self.brightness_slider.setValue(0)
-            self.contrast_slider.setValue(0)
-            
-            self.brightness_slider.blockSignals(False)
-            self.contrast_slider.blockSignals(False)
-            
-            # Update display with default values
+
+    def _schedule_roi_display(self):
+        """Rate-limit brightness/contrast redraws so dragging stays responsive.
+
+        The first change is applied immediately; further changes during the
+        short cooldown are coalesced into a single trailing update. This caps the
+        redraw rate (~40 fps) instead of redrawing on every intermediate slider
+        value.
+        """
+        timer = getattr(self, '_roi_update_timer', None)
+        if timer is None:
             self.update_roi_display()
-    
-    def update_roi_display(self):
-        """Update the ROI display with current brightness/contrast settings."""
-        if not hasattr(self, 'original_display_img') or not hasattr(self, 'roi_image'):
             return
-            
-        # Get current slider values
-        brightness = self.brightness_slider.value() / 100.0  # Convert to -1.0 to 1.0 range
-        contrast = self.contrast_slider.value() / 100.0  # Convert to -1.0 to 1.0 range
-        
-        # Apply brightness and contrast
-        img = self.original_display_img.astype(float)
-        img = (img - img.min()) / (img.max() - img.min() + 1e-8)  # Normalize to 0-1
-        
-        # Apply contrast (contrast * (x - 0.5) + 0.5)
-        if contrast >= 0:
-            img = (1 + contrast) * (img - 0.5) + 0.5
+        if timer.isActive():
+            self._roi_update_pending = True
         else:
-            img = (1 + contrast) * img + 0.5 * (1 - contrast)
-            
-        # Apply brightness
-        img = img + brightness
-        
-        # Clip to valid range
-        img = np.clip(img, 0, 1)
-        
-        # Update the image data
-        self.roi_image.set_array(img)
-        self.roi_canvas.draw_idle()
-    
-    def reset_roi_adjustments(self):
-        """Reset brightness and contrast sliders to default values."""
-        if hasattr(self, 'brightness_slider') and hasattr(self, 'contrast_slider'):
-            self.brightness_slider.blockSignals(True)
-            self.contrast_slider.blockSignals(True)
-            
-            self.brightness_slider.setValue(0)
-            self.contrast_slider.setValue(0)
-            
-            self.brightness_slider.blockSignals(False)
-            self.contrast_slider.blockSignals(False)
-            
-            # Update display with default values
             self.update_roi_display()
+            timer.start(25)
+
+    def _flush_roi_display(self):
+        if getattr(self, '_roi_update_pending', False):
+            self._roi_update_pending = False
+            self.update_roi_display()
+            self._roi_update_timer.start(25)
+
+    def update_roi_display(self):
+        """Apply the brightness/contrast sliders to the ROI editor image.
+
+        The image is normalised to [0, 1] once (``_roi_norm_base``) when the
+        editor opens; each update only applies a cheap affine contrast/brightness
+        transform, avoiding a full re-normalisation of every pixel per tick.
+        """
+        base = getattr(self, '_roi_norm_base', None)
+        if base is None or getattr(self, 'roi_image', None) is None:
+            return
+        brightness = self.brightness_slider.value() / 100.0
+        contrast = self.contrast_slider.value() / 100.0
+        if contrast >= 0:
+            img = (1.0 + contrast) * (base - 0.5) + 0.5
+        else:
+            img = (1.0 + contrast) * base + 0.5 * (1.0 - contrast)
+        img = np.clip(img + brightness, 0.0, 1.0)
+        self.roi_image.set_data(img)
+        self.roi_canvas.draw_idle()
+
+    def reset_roi_adjustments(self):
+        """Reset the brightness/contrast sliders to their defaults."""
+        for slider in (getattr(self, 'brightness_slider', None), getattr(self, 'contrast_slider', None)):
+            if slider is not None:
+                slider.blockSignals(True)
+                slider.setValue(0)
+                slider.blockSignals(False)
+        self.update_roi_display()
 
     def start_roi(self):
-        """Start polygon ROI drawing on the image with zoom/pan support."""
+        """Open the ROI editor for the current image.
+
+        View navigation (pan / zoom / home) uses the standard matplotlib toolbar.
+        Drawing uses a shape selector (polygon / rectangle / ellipse); while the
+        toolbar is in pan or zoom mode matplotlib's ``widgetlock`` automatically
+        suspends the selector, so the two never fight over the mouse.
+        """
         if self.current_image is None:
             return
-            
         try:
-            # Get display image (first frame if multi-frame)
             display_img = self.get_display_image(self.current_image)
-            
-            # Disable the button while drawing
+
+            # Ensure a label image exists to receive ROIs.
+            if getattr(self, 'current_labels', None) is None:
+                self.current_labels = np.zeros(display_img.shape[:2], dtype=np.uint16)
+
+            # Re-open cleanly if a previous editor is still around.
+            self._teardown_roi_editor()
             self.add_roi_btn.setEnabled(False)
-            
-            # Close any existing ROI window
-            if hasattr(self, 'roi_window') and self.roi_window:
-                try:
-                    self.roi_window.close()
-                except:
-                    pass
-            
-            # Create a new figure for ROI drawing
-            fig_num = len(plt.get_fignums()) + 1
-            self.roi_figure, self.roi_ax = plt.subplots(figsize=(10, 10), num=fig_num)
-            self.roi_figure.set_facecolor('none')
-            self._figures.append(self.roi_figure)
-            
+
+            # Non-pyplot figure so it is freed as soon as we drop our references.
+            self.roi_figure = Figure(figsize=(8, 8))
+            self.roi_ax = self.roi_figure.add_subplot(111)
             self.roi_canvas = FigureCanvas(self.roi_figure)
-            
-            # Create main window and layout
+
+            self.original_display_img = display_img.copy()
+            # Normalise once; brightness/contrast then only apply a cheap affine.
+            base = self.original_display_img.astype(np.float32)
+            mn, mx = float(base.min()), float(base.max())
+            self._roi_norm_base = (base - mn) / (mx - mn + 1e-8)
+            self._pending_shape = None
+            self._roi_undo_stack = []
+            self.roi_shape = 'polygon'
+            self._draw_enabled = True
+
+            self.roi_image = self.roi_ax.imshow(self._roi_norm_base, cmap='gray', vmin=0.0, vmax=1.0)
+            self.roi_ax.axis('off')
+            theme_system.apply_figure_theme(self.roi_figure, theme_system.current_theme_name())
+
+            # ---- Window & layout ----
             self.roi_window = QWidget()
-            self.roi_window.setWindowTitle("Draw ROI - Close when done")
+            self.roi_window.setWindowTitle("Draw ROIs")
             self.roi_window.setWindowModality(Qt.ApplicationModal)
-            self.roi_window.resize(1000, 800)  # Set a reasonable default size
-            
-            # Main layout
+            self.roi_window.resize(1000, 820)
             main_layout = QVBoxLayout(self.roi_window)
-            main_layout.setContentsMargins(5, 5, 5, 5)
-            main_layout.setSpacing(5)
-            
-            # Create toolbar layout
-            toolbar_layout = QHBoxLayout()
-            
-            # Add mode selection buttons
-            self.select_btn = QPushButton("Select")
-            self.select_btn.setCheckable(True)
-            self.select_btn.setChecked(True)
-            self.select_btn.setToolTip("Select and draw polygon ROIs")
-            self.select_btn.clicked.connect(lambda: self.set_tool_mode('select'))
-            toolbar_layout.addWidget(self.select_btn)
-            
-            self.zoom_btn = QPushButton("Zoom")
-            self.zoom_btn.setCheckable(True)
-            self.zoom_btn.setToolTip("Zoom in/out with mouse wheel")
-            self.zoom_btn.clicked.connect(lambda: self.set_tool_mode('zoom'))
-            toolbar_layout.addWidget(self.zoom_btn)
-            
-            self.pan_btn = QPushButton("Pan")
-            self.pan_btn.setCheckable(True)
-            self.pan_btn.setToolTip("Pan the view")
-            self.pan_btn.clicked.connect(lambda: self.set_tool_mode('pan'))
-            toolbar_layout.addWidget(self.pan_btn)
-            
-            toolbar_layout.addStretch()
-            
-            reset_btn = QPushButton("Reset View")
-            reset_btn.setToolTip("Reset the view to show the entire image")
-            reset_btn.clicked.connect(self.reset_roi_view)
-            toolbar_layout.addWidget(reset_btn)
-            
-            # Add toolbar layout to main layout
-            main_layout.addLayout(toolbar_layout)
-            
-            # Add brightness/contrast controls
-            controls_layout = QHBoxLayout()
-            controls_layout.setContentsMargins(5, 5, 5, 5)
-            controls_layout.setSpacing(10)
-            
-            # Brightness slider
-            brightness_layout = QVBoxLayout()
-            brightness_label = QLabel("Brightness:")
+            main_layout.setContentsMargins(8, 8, 8, 8)
+            main_layout.setSpacing(8)
+
+            # Coalesce rapid brightness/contrast changes into throttled redraws.
+            self._roi_update_timer = QTimer(self.roi_window)
+            self._roi_update_timer.setSingleShot(True)
+            self._roi_update_timer.timeout.connect(self._flush_roi_display)
+            self._roi_update_pending = False
+
+            # ---- Draw controls + actions ----
+            action_bar = QHBoxLayout()
+            self.draw_toggle = QPushButton("Draw")
+            self.draw_toggle.setCheckable(True)
+            self.draw_toggle.setChecked(True)
+            self.draw_toggle.setObjectName("primaryButton")
+            self.draw_toggle.setToolTip("Toggle ROI drawing on/off (turn off to pan/zoom freely)")
+            self.draw_toggle.toggled.connect(self._toggle_draw)
+            ui_widgets.set_button_icon(self.draw_toggle, "plus", on_accent=True)
+            action_bar.addWidget(self.draw_toggle)
+
+            action_bar.addWidget(QLabel("Shape:"))
+            self.shape_combo = QComboBox()
+            self.shape_combo.addItems(["Polygon", "Rectangle", "Ellipse"])
+            self.shape_combo.setToolTip("Polygon: click to add vertices, close the loop.\n"
+                                        "Rectangle / Ellipse: click and drag, then adjust handles.")
+            self.shape_combo.currentTextChanged.connect(self._on_shape_changed)
+            action_bar.addWidget(self.shape_combo)
+
+            action_bar.addSpacing(18)
+            self.commit_roi_btn = QPushButton("Add This ROI")
+            self.commit_roi_btn.setObjectName("successButton")
+            self.commit_roi_btn.setToolTip("Write the current shape into the mask as a new ROI")
+            self.commit_roi_btn.setEnabled(False)
+            self.commit_roi_btn.clicked.connect(self.commit_pending_roi)
+            ui_widgets.set_button_icon(self.commit_roi_btn, "check", on_accent=True)
+            action_bar.addWidget(self.commit_roi_btn)
+
+            self.undo_roi_btn = QPushButton("Undo Last")
+            self.undo_roi_btn.setToolTip("Remove the most recently added ROI")
+            self.undo_roi_btn.setEnabled(False)
+            self.undo_roi_btn.clicked.connect(self.undo_last_roi)
+            ui_widgets.set_button_icon(self.undo_roi_btn, "undo")
+            action_bar.addWidget(self.undo_roi_btn)
+
+            self.clear_shape_btn = QPushButton("Clear Shape")
+            self.clear_shape_btn.setToolTip("Discard the shape currently being drawn")
+            self.clear_shape_btn.clicked.connect(self.clear_pending_roi)
+            ui_widgets.set_button_icon(self.clear_shape_btn, "clear")
+            action_bar.addWidget(self.clear_shape_btn)
+
+            action_bar.addStretch()
+            done_btn = QPushButton("Done")
+            done_btn.setObjectName("primaryButton")
+            done_btn.clicked.connect(self.roi_window.close)
+            ui_widgets.set_button_icon(done_btn, "check", on_accent=True)
+            action_bar.addWidget(done_btn)
+            main_layout.addLayout(action_bar)
+
+            # ---- Matplotlib navigation toolbar (pan / zoom / home / save) ----
+            self.roi_toolbar = NavigationToolbar2QT(self.roi_canvas, self.roi_window)
+            for action in self.roi_toolbar.actions():
+                if action.text() in ('Subplots', 'Customize'):
+                    action.setVisible(False)
+            theme_system.style_toolbar(self.roi_toolbar, theme_system.current_theme_name())
+            main_layout.addWidget(self.roi_toolbar)
+
+            # ---- Brightness / contrast ----
+            controls = QHBoxLayout()
+            controls.addWidget(QLabel("Brightness:"))
             self.brightness_slider = QSlider(Qt.Horizontal)
             self.brightness_slider.setRange(-100, 100)
             self.brightness_slider.setValue(0)
-            self.brightness_slider.setToolTip("Adjust image brightness")
-            self.brightness_slider.valueChanged.connect(self.update_roi_display)
-            brightness_layout.addWidget(brightness_label)
-            brightness_layout.addWidget(self.brightness_slider)
-            controls_layout.addLayout(brightness_layout)
-            
-            # Contrast slider
-            contrast_layout = QVBoxLayout()
-            contrast_label = QLabel("Contrast:")
+            self.brightness_slider.valueChanged.connect(self._schedule_roi_display)
+            controls.addWidget(self.brightness_slider)
+            controls.addWidget(QLabel("Contrast:"))
             self.contrast_slider = QSlider(Qt.Horizontal)
             self.contrast_slider.setRange(-100, 100)
             self.contrast_slider.setValue(0)
-            self.contrast_slider.setToolTip("Adjust image contrast")
-            self.contrast_slider.valueChanged.connect(self.update_roi_display)
-            contrast_layout.addWidget(contrast_label)
-            contrast_layout.addWidget(self.contrast_slider)
-            controls_layout.addLayout(contrast_layout)
-            
-            # Reset button for sliders
-            reset_btn = QPushButton("Reset")
-            reset_btn.setToolTip("Reset brightness and contrast to default")
-            reset_btn.clicked.connect(self.reset_roi_adjustments)
-            controls_layout.addWidget(reset_btn)
-            
-            main_layout.addLayout(controls_layout)
-            
-            # Add matplotlib canvas
-            self.roi_canvas.setParent(self.roi_window)
-            main_layout.addWidget(self.roi_canvas)
+            self.contrast_slider.valueChanged.connect(self._schedule_roi_display)
+            controls.addWidget(self.contrast_slider)
+            bc_reset = QPushButton("Reset")
+            bc_reset.setToolTip("Reset brightness and contrast")
+            bc_reset.clicked.connect(self.reset_roi_adjustments)
+            controls.addWidget(bc_reset)
+            reset_view_btn = QPushButton("Reset View")
+            reset_view_btn.setToolTip("Fit the whole image in the view")
+            reset_view_btn.clicked.connect(self.reset_roi_view)
+            ui_widgets.set_button_icon(reset_view_btn, "refresh")
+            controls.addWidget(reset_view_btn)
+            main_layout.addLayout(controls)
 
-            # Set up window close event
+            # ---- Canvas ----
+            self.roi_canvas.setParent(self.roi_window)
+            main_layout.addWidget(self.roi_canvas, 1)
+
+            # ---- Hint / status line ----
+            self.roi_hint_label = QLabel()
+            main_layout.addWidget(self.roi_hint_label)
+
             self.roi_window.closeEvent = self.roi_window_closed
-            
-            # Store the original image for adjustments
-            self.original_display_img = display_img.copy()
-            
-            # Store the original image for ROI drawing
-            self.display_img = display_img.copy()
-            
-            # Clear the figure and show the image
-            self.roi_ax.clear()
-            self.roi_image = self.roi_ax.imshow(display_img, cmap='gray')
-            self.roi_ax.axis('off')
-            
-            # Set initial view
+
             self.reset_roi_view()
-            
-            # Clear any previous polygon selector
-            if hasattr(self, 'poly_selector') and self.poly_selector is not None:
-                self.poly_selector.disconnect_events()
-                self.poly_selector = None
-                
-            # Create new polygon selector with custom event handling
-            self.poly_selector = PolygonSelector(
-                self.roi_ax,
-                self._roi_complete,
-                useblit=True,
-                props=dict(color='lime', linewidth=1),
-                handle_props=dict(markerfacecolor='lime', markeredgecolor='lime'),
-                grab_range=10
-            )
-            
-            # Store the current tool mode
-            self.current_tool_mode = 'select'  # 'select', 'zoom', or 'pan'
-            
-            # Create and configure the Matplotlib navigation toolbar
-            self.roi_toolbar = NavigationToolbar2QT(self.roi_canvas, self.roi_window)
-            main_layout.insertWidget(1, self.roi_toolbar)  # Add toolbar below buttons
-            
-            # Connect mouse events for our custom handling (if needed)
+            self._make_selector()
             self.roi_canvas.mpl_connect('scroll_event', self.on_mouse_scroll)
-            
-            # Connect to the navigation mode change event
-            self.roi_toolbar.zoom()  # Initialize with zoom mode
-            self.roi_toolbar.pan()   # Then switch to pan mode to ensure clean state
-            self.roi_toolbar.home()  # Reset the view
-            
-            # Set up the default mode to 'select' (ROI drawing)
-            self.set_tool_mode('select')
-            
-            # Initialize status with default tool mode
-            self.update_status()
-            
-            # Disable the 'Subplots' and 'Customize' buttons which aren't needed
-            for action in self.roi_toolbar.actions():
-                if action.text() in ['Subplots', 'Customize']:
-                    action.setVisible(False)
-            
-            # Show the ROI window
+            self._update_roi_hint()
+
             self.roi_window.show()
-            
         except Exception as e:
-            print(f"Error starting ROI drawing: {e}")
-            QMessageBox.warning(self, "Error", f"Failed to start ROI drawing: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            QMessageBox.warning(self, "Error", f"Failed to start ROI drawing: {e}")
             self.add_roi_btn.setEnabled(True)
-    
+
+    def _make_selector(self):
+        """Create the selector for the current shape, disconnecting any old one."""
+        old = getattr(self, 'poly_selector', None)
+        if old is not None:
+            try:
+                old.set_active(False)
+                old.disconnect_events()
+            except Exception:
+                pass
+            self.poly_selector = None
+
+        green = '#00e676'
+        if self.roi_shape == 'rectangle':
+            self.poly_selector = RectangleSelector(
+                self.roi_ax, self._on_rect_select, useblit=True, button=[1],
+                interactive=True, minspanx=3, minspany=3, spancoords='data',
+                props=dict(facecolor=green, edgecolor=green, alpha=0.25, fill=True, linewidth=1.5),
+            )
+        elif self.roi_shape == 'ellipse':
+            self.poly_selector = EllipseSelector(
+                self.roi_ax, self._on_ellipse_select, useblit=True, button=[1],
+                interactive=True, minspanx=3, minspany=3, spancoords='data',
+                props=dict(facecolor=green, edgecolor=green, alpha=0.25, fill=True, linewidth=1.5),
+            )
+        else:  # polygon
+            self.poly_selector = PolygonSelector(
+                self.roi_ax, self._on_poly_select, useblit=True,
+                props=dict(color=green, linewidth=1.5, alpha=0.9),
+                handle_props=dict(markerfacecolor=green, markeredgecolor='white', markersize=7),
+                grab_range=12,
+            )
+        self.poly_selector.set_active(bool(getattr(self, '_draw_enabled', True)))
+
+    # -- selector callbacks: store the pending shape, never commit here --------
+    def _on_poly_select(self, verts):
+        if verts is not None and len(verts) >= 3:
+            self._set_pending(('polygon', np.asarray(verts, dtype=float)))
+        else:
+            self._set_pending(None)
+
+    def _on_rect_select(self, eclick, erelease):
+        self._set_pending_from_extents('rectangle')
+
+    def _on_ellipse_select(self, eclick, erelease):
+        self._set_pending_from_extents('ellipse')
+
+    def _set_pending_from_extents(self, kind):
+        try:
+            xmin, xmax, ymin, ymax = self.poly_selector.extents
+        except Exception:
+            self._set_pending(None)
+            return
+        if abs(xmax - xmin) < 1 or abs(ymax - ymin) < 1:
+            self._set_pending(None)
+        else:
+            self._set_pending((kind, (xmin, xmax, ymin, ymax)))
+
+    def _set_pending(self, shape):
+        self._pending_shape = shape
+        if hasattr(self, 'commit_roi_btn'):
+            self.commit_roi_btn.setEnabled(shape is not None)
+        self._update_roi_hint()
+
+    def _toggle_draw(self, enabled):
+        """Enable/disable drawing so the user can pan/zoom or click freely."""
+        self._draw_enabled = bool(enabled)
+        if getattr(self, 'poly_selector', None) is not None:
+            self.poly_selector.set_active(self._draw_enabled)
+        if getattr(self, 'roi_canvas', None) is not None:
+            self.roi_canvas.setCursor(Qt.CrossCursor if enabled else Qt.ArrowCursor)
+        self._update_roi_hint()
+
+    def _on_shape_changed(self, text):
+        self.roi_shape = text.strip().lower()
+        self._set_pending(None)
+        self._make_selector()
+        if getattr(self, 'roi_canvas', None) is not None:
+            self.roi_canvas.draw_idle()
+        self._update_roi_hint()
+
+    def commit_pending_roi(self):
+        """Rasterise the pending shape into the label image as one new ROI."""
+        shape = getattr(self, '_pending_shape', None)
+        if shape is None or self.current_labels is None:
+            return
+        from skimage.draw import polygon as sk_polygon, ellipse as sk_ellipse
+        kind, data = shape
+        h, w = self.current_labels.shape
+        if kind == 'polygon':
+            verts = data
+            xs = np.clip(verts[:, 0], 0, w - 1)
+            ys = np.clip(verts[:, 1], 0, h - 1)
+            rr, cc = sk_polygon(ys, xs, self.current_labels.shape)
+        elif kind == 'rectangle':
+            xmin, xmax, ymin, ymax = data
+            r0, r1 = sorted((int(round(ymin)), int(round(ymax))))
+            c0, c1 = sorted((int(round(xmin)), int(round(xmax))))
+            r0, c0 = max(r0, 0), max(c0, 0)
+            r1, c1 = min(r1, h - 1), min(c1, w - 1)
+            rr, cc = np.mgrid[r0:r1 + 1, c0:c1 + 1]
+            rr, cc = rr.ravel(), cc.ravel()
+        else:  # ellipse
+            xmin, xmax, ymin, ymax = data
+            yc, xc = (ymin + ymax) / 2.0, (xmin + xmax) / 2.0
+            ry, rx = abs(ymax - ymin) / 2.0, abs(xmax - xmin) / 2.0
+            rr, cc = sk_ellipse(yc, xc, ry, rx, shape=self.current_labels.shape)
+
+        if rr.size == 0:
+            self._update_roi_hint()
+            return
+
+        new_label = int(self.current_labels.max()) + 1
+        self.current_labels[rr, cc] = new_label
+        self._roi_undo_stack.append(new_label)
+
+        self._set_pending(None)
+        self.undo_roi_btn.setEnabled(True)
+        self._make_selector()  # fresh shape for the next ROI
+        if getattr(self, 'roi_canvas', None) is not None:
+            self.roi_canvas.draw_idle()
+        self.update_display(self.current_image, keep_rois=True)
+        self.populate_roi_list()
+        self._update_roi_hint(committed=new_label)
+
+    def undo_last_roi(self):
+        """Remove the most recently committed ROI."""
+        if not getattr(self, '_roi_undo_stack', None):
+            return
+        label = self._roi_undo_stack.pop()
+        self.current_labels[self.current_labels == label] = 0
+        self.renumber_labels()
+        self._roi_undo_stack = list(range(1, int(self.current_labels.max()) + 1))
+        self.undo_roi_btn.setEnabled(bool(self._roi_undo_stack))
+        self.update_display(self.current_image, keep_rois=True)
+        self.populate_roi_list()
+        self._update_roi_hint()
+
+    def clear_pending_roi(self):
+        """Discard the shape currently being drawn."""
+        self._set_pending(None)
+        self._make_selector()
+        if getattr(self, 'roi_canvas', None) is not None:
+            self.roi_canvas.draw_idle()
+
+    def _update_roi_hint(self, committed=None):
+        if not hasattr(self, 'roi_hint_label'):
+            return
+        n = len(getattr(self, '_roi_undo_stack', []) or [])
+        if not getattr(self, '_draw_enabled', True):
+            msg = "Drawing off – pan/zoom with the toolbar, or turn Draw back on."
+        elif committed is not None:
+            msg = f"Added ROI #{committed}. Draw the next shape, or click Done."
+        elif getattr(self, '_pending_shape', None) is not None:
+            msg = "Shape ready – adjust it, then click 'Add This ROI'."
+        elif getattr(self, 'roi_shape', 'polygon') == 'polygon':
+            msg = "Polygon: click to add vertices, close the loop to finish."
+        else:
+            msg = f"{self.roi_shape.title()}: click and drag on the image, then adjust the handles."
+        self.roi_hint_label.setText(f"{msg}   ({n} ROI(s) this session)")
+
     def on_mouse_scroll(self, event):
-        """Handle mouse scroll events for zooming with ctrl key."""
-        if not hasattr(self, 'roi_ax') or event.inaxes != self.roi_ax:
+        """Ctrl+scroll to zoom the ROI view around the cursor."""
+        if getattr(self, 'roi_ax', None) is None or event.inaxes != self.roi_ax:
             return
-            
-        # Only handle scroll zoom when ctrl is pressed
-        if not event.key == 'control':
+        if event.key != 'control':
             return
-            
-        # Get the current x and y limits
-        xlim = self.roi_ax.get_xlim()
-        ylim = self.roi_ax.get_ylim()
-        
-        # Get the current mouse position in data coordinates
-        xdata = event.xdata
-        ydata = event.ydata
-        
+        xdata, ydata = event.xdata, event.ydata
         if xdata is None or ydata is None:
             return
-        
-        # Calculate zoom factor (finer control)
-        zoom_factor = 1.1 if event.button == 'up' else 0.9
-        
-        # Get the current dimensions
-        x_range = xlim[1] - xlim[0]
-        y_range = ylim[1] - ylim[0]
-        
-        # Calculate new dimensions
-        new_x_range = x_range * zoom_factor
-        new_y_range = y_range * zoom_factor
-        
-        # Calculate the relative position of the mouse in the current view
-        x_frac = (xdata - xlim[0]) / x_range
-        y_frac = (ydata - ylim[0]) / y_range
-        
-        # Calculate new limits based on mouse position
-        new_xlim = [xdata - x_frac * new_x_range, xdata + (1 - x_frac) * new_x_range]
-        new_ylim = [ydata - (1 - y_frac) * new_y_range, ydata + y_frac * new_y_range]
-        
-        # Set new limits with boundary checks
-        img_shape = self.current_labels.shape if hasattr(self, 'current_labels') else (1000, 1000)
-        
-        # Ensure we don't zoom out too far
-        max_zoom = max(img_shape[1] * 10, 1000)  # Max 10x image width
-        min_zoom = min(img_shape[1] / 10, 100)   # Min 1/10th of image width
-        
-        if abs(new_xlim[1] - new_xlim[0]) > min_zoom and abs(new_ylim[1] - new_ylim[0]) > min_zoom:
-            if abs(new_xlim[1] - new_xlim[0]) < max_zoom and abs(new_ylim[1] - new_ylim[0]) < max_zoom:
-                self.roi_ax.set_xlim(new_xlim)
-                self.roi_ax.set_ylim(new_ylim)
-        
-        # Redraw
+        xlim = self.roi_ax.get_xlim()
+        ylim = self.roi_ax.get_ylim()
+        zoom = 1.1 if event.button == 'up' else 0.9
+        x_range = (xlim[1] - xlim[0]) * zoom
+        y_range = (ylim[1] - ylim[0]) * zoom
+        x_frac = (xdata - xlim[0]) / (xlim[1] - xlim[0])
+        y_frac = (ydata - ylim[0]) / (ylim[1] - ylim[0])
+        self.roi_ax.set_xlim([xdata - x_frac * x_range, xdata + (1 - x_frac) * x_range])
+        self.roi_ax.set_ylim([ydata - (1 - y_frac) * y_range, ydata + y_frac * y_range])
         self.roi_canvas.draw_idle()
 
-    def set_tool_mode(self, mode):
-        """Set the current tool mode (select, zoom, pan)."""
-        if not hasattr(self, 'roi_figure') or not hasattr(self, 'roi_window'):
-            return
-            
-        # Update button states
-        if hasattr(self, 'select_btn'):
-            self.select_btn.setChecked(mode == 'select')
-        if hasattr(self, 'zoom_btn'):
-            self.zoom_btn.setChecked(mode == 'zoom')
-        if hasattr(self, 'pan_btn'):
-            self.pan_btn.setChecked(mode == 'pan')
-        
-        # Set the tool mode
-        self.current_tool_mode = mode
-        
-        # Update the toolbar state and cursor
-        if mode == 'select':
-            # Disable navigation tools and enable polygon selector
-            if hasattr(self, 'roi_toolbar'):
-                # Turn off any active navigation tool
-                if hasattr(self.roi_toolbar, '_active') and self.roi_toolbar._active in ['ZOOM', 'PAN']:
-                    if self.roi_toolbar._active == 'ZOOM':
-                        self.roi_toolbar.zoom()
-                    else:
-                        self.roi_toolbar.pan()
-            
-            # Enable polygon selector
-            if hasattr(self, 'poly_selector'):
-                self.poly_selector.set_visible(True)
-                self.poly_selector.set_active(True)
-            
-            # Set cursor
-            if hasattr(self, 'roi_canvas'):
-                self.roi_canvas.setCursor(Qt.CrossCursor)
-                
-        elif mode == 'zoom':
-            # Activate zoom tool
-            if hasattr(self, 'roi_toolbar'):
-                self.roi_toolbar.zoom()
-            
-            # Disable polygon selector
-            if hasattr(self, 'poly_selector'):
-                self.poly_selector.set_visible(False)
-                self.poly_selector.set_active(False)
-            
-            # Set cursor
-            if hasattr(self, 'roi_canvas'):
-                self.roi_canvas.setCursor(Qt.CrossCursor)
-                
-        elif mode == 'pan':
-            # Activate pan tool
-            if hasattr(self, 'roi_toolbar'):
-                self.roi_toolbar.pan()
-            
-            # Disable polygon selector
-            if hasattr(self, 'poly_selector'):
-                self.poly_selector.set_visible(False)
-                self.poly_selector.set_active(False)
-            
-            # Set cursor
-            if hasattr(self, 'roi_canvas'):
-                self.roi_canvas.setCursor(Qt.OpenHandCursor)
-        
-        # Force redraw if canvas exists
-        if hasattr(self, 'roi_canvas'):
-            self.roi_canvas.draw_idle()
-    
-    def on_mouse_press(self, event):
-        """Handle mouse press events."""
-        if not hasattr(self, 'roi_ax') or event.inaxes != self.roi_ax:
-            return
-            
-        # Let the polygon selector handle the event in select mode
-        if (event.button == 1 and 
-            self.current_tool_mode == 'select' and 
-            hasattr(self, 'poly_selector') and 
-            hasattr(self.poly_selector, 'onpress')):
-            self.poly_selector.onpress(event)
-    
-    def on_mouse_release(self, event):
-        """Handle mouse release events."""
-        if not hasattr(self, 'roi_ax') or event.inaxes != self.roi_ax:
-            return
-            
-        # Let the polygon selector handle the event in select mode
-        if (event.button == 1 and 
-            self.current_tool_mode == 'select' and 
-            hasattr(self, 'poly_selector') and 
-            hasattr(self.poly_selector, 'onrelease')):
-            self.poly_selector.onrelease(event)
-    
-    def on_motion(self, event):
-        """Handle mouse motion events."""
-        if not hasattr(self, 'roi_ax') or event.inaxes != self.roi_ax:
-            return
-            
-        # Let the polygon selector handle the event in select mode
-        if (self.current_tool_mode == 'select' and 
-            hasattr(self, 'poly_selector') and 
-            hasattr(self.poly_selector, 'onmove')):
-            self.poly_selector.onmove(event)
-    
     def roi_window_closed(self, event):
-        """Handle ROI window close event."""
+        """Finalise the editor: tear it down and free its matplotlib objects."""
         try:
-            # Clean up polygon selector
-            if hasattr(self, 'poly_selector') and self.poly_selector is not None:
-                try:
-                    self.poly_selector.disconnect_events()
-                except Exception:
-                    pass
-                self.poly_selector = None
-            
-            # Clean up figure
-            if hasattr(self, 'roi_figure'):
-                try:
-                    plt.close(self.roi_figure)
-                except Exception:
-                    pass
-                self.roi_figure = None
-                
-            # Reset tool mode
-            if hasattr(self, 'current_tool_mode'):
-                self.current_tool_mode = 'select'
-                
+            self._teardown_roi_editor()
             if hasattr(self, 'add_roi_btn'):
                 self.add_roi_btn.setEnabled(True)
-                
+            if getattr(self, 'current_image', None) is not None:
+                self.update_display(self.current_image, keep_rois=True)
+                self.populate_roi_list()
         except Exception as e:
-            print(f"Error cleaning up ROI window: {e}")
-            
+            dprint(f"Error cleaning up ROI window: {e}")
         event.accept()
-        
-    def save_roi_figure(self):
-        """Save the current ROI figure."""
-        if not hasattr(self, 'roi_figure'):
-            return
-            
-        file_path, _ = QFileDialog.getSaveFileName(
-            self.roi_window, 
-            "Save ROI Figure", 
-            "", 
-            "PNG Files (*.png);;JPEG Files (*.jpg);;All Files (*)"
-        )
-        
-        if file_path:
+
+    def _teardown_roi_editor(self):
+        """Disconnect the selector and drop references so the figure is freed."""
+        sel = getattr(self, 'poly_selector', None)
+        if sel is not None:
             try:
-                self.roi_figure.savefig(file_path, dpi=300, bbox_inches='tight')
-                QMessageBox.information(self, "Success", f"Figure saved to {file_path}")
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to save figure: {str(e)}")
-    
-    def _roi_complete(self, verts):
-        """Callback when ROI drawing is complete."""
-        if self.current_image is None:
-            return
-            
-        # Get display image to determine shape
-        display_img = self.get_display_image(self.current_image)
-        
-        # Initialize labels if needed
-        if not hasattr(self, 'current_labels') or self.current_labels is None:
-            self.current_labels = np.zeros_like(display_img, dtype=np.uint16)
-        
-        try:
-            # Convert polygon to mask
-            from skimage.draw import polygon
-            verts = np.array(verts)
-            
-            # Ensure vertices are within image bounds
-            height, width = self.current_labels.shape
-            verts[:, 0] = np.clip(verts[:, 0], 0, width-1)
-            verts[:, 1] = np.clip(verts[:, 1], 0, height-1)
-            
-            # Create mask from polygon
-            rr, cc = polygon(verts[:, 1], verts[:, 0], self.current_labels.shape)
-            
-            # Create a new label (max_label + 1)
-            new_label = 1 if np.max(self.current_labels) == 0 else np.max(self.current_labels) + 1
-            self.current_labels[rr, cc] = new_label
-            
-            # Update the display and ROI list
-            self.update_display(self.current_image, keep_rois=True)
-            self.populate_roi_list()  # Update ROI list after addition
-            
-        except Exception as e:
-            print(f"Error creating ROI: {e}")
-            QMessageBox.warning(self, "Error", f"Failed to create ROI: {str(e)}")
-        finally:
-            # Clean up any resources if needed
-            pass
-    
+                sel.disconnect_events()
+            except Exception:
+                pass
+        self.poly_selector = None
+
+        canvas = getattr(self, 'roi_canvas', None)
+        if canvas is not None:
+            try:
+                canvas.setParent(None)
+                canvas.close()
+            except Exception:
+                pass
+
+        for attr in ('roi_toolbar', 'roi_canvas', 'roi_image', 'roi_ax', 'roi_figure'):
+            if hasattr(self, attr):
+                setattr(self, attr, None)
+        self._pending_verts = None
+
     def closeEvent(self, event):
         """Handle window close event."""
         # Save preferences only if there are unsaved changes
@@ -2280,11 +2408,12 @@ class CellposeSegmentationTab(QWidget):
             try:
                 self.roi_window.close()
             except Exception as e:
-                print(f"Error closing ROI window: {e}")
+                dprint(f"Error closing ROI window: {e}")
         
-        # Clean up matplotlib figures
+        # Clean up matplotlib figures and any converted-CZI temp files
         self.cleanup_figures()
-        
+        self._cleanup_temp_files()
+
         # Call parent close event
         super().closeEvent(event)
     
@@ -2295,265 +2424,60 @@ class CellposeSegmentationTab(QWidget):
             try:
                 plt.close(fig)
             except Exception as e:
-                print(f"Error closing figure: {e}")
+                dprint(f"Error closing figure: {e}")
         
         # Clear the figures list
         if hasattr(self, '_figures'):
             self._figures.clear()
             
+    def _style_drop_hint(self):
+        """Style the drag-and-drop placeholder for the current theme."""
+        if not hasattr(self, 'drop_hint'):
+            return
+        c = theme_system.palette(theme_system.current_theme_name())
+        self.drop_hint.setStyleSheet(
+            f"QLabel {{ color: {c['text_muted']}; font-style: italic; padding: 10px;"
+            f" border: 2px dashed {c['border_strong']}; border-radius: 8px; margin: 4px; }}"
+        )
+
     def update_theme(self):
         """Update the plot colors and toolbar icons when the application theme changes."""
-        # Update the current theme based on application palette
         app = QApplication.instance()
-        palette = app.palette()
-        is_dark = palette.window().color().lightness() < 128
+        is_dark = app.palette().window().color().lightness() < 128
         self.current_theme = 'dark' if is_dark else 'light'
-        
-        # Set appropriate colors based on theme
-        if is_dark:
-            self.text_color = '#f0f0f0'
-            self.bg_color = '#1a1a1a'  # Darker background for better contrast
-            self.grid_color = '#3a3a3a'
-            self.edge_color = '#5a5a5a'  # Brighter edge color for dark mode
-            
-            # Set Matplotlib style for dark theme
-            plt.style.use('dark_background')
-            # Force white text for all text elements
-            plt.rcParams.update({
-                'text.color': 'white',
-                'axes.labelcolor': 'white',
-                'xtick.color': 'white',
-                'ytick.color': 'white',
-                'axes.edgecolor': '#888888',
-                'figure.facecolor': self.bg_color,
-                'figure.edgecolor': self.edge_color,
-                'savefig.facecolor': self.bg_color,
-                'savefig.edgecolor': self.edge_color,
-                'axes.facecolor': self.bg_color,
-                'axes.grid': True,
-                'grid.color': self.grid_color,
-                'grid.alpha': 0.3,
-                'axes.axisbelow': True,
-                'legend.facecolor': self.bg_color,
-                'legend.edgecolor': self.edge_color,
-            })
-        else:
-            self.text_color = 'black'
-            self.bg_color = 'white'
-            self.grid_color = '#e0e0e0'
-            self.edge_color = '#cccccc'
-            
-            # Set Matplotlib style for light theme
-            plt.style.use('default')
-            # Force black text for all text elements
-            plt.rcParams.update({
-                'text.color': 'black',
-                'axes.labelcolor': 'black',
-                'xtick.color': 'black',
-                'ytick.color': 'black',
-                'axes.edgecolor': '#666666',
-                'figure.facecolor': self.bg_color,
-                'figure.edgecolor': self.edge_color,
-                'savefig.facecolor': self.bg_color,
-                'savefig.edgecolor': self.edge_color,
-                'axes.facecolor': self.bg_color,
-                'axes.grid': True,
-                'grid.color': self.grid_color,
-                'grid.alpha': 0.3,
-                'axes.axisbelow': True,
-                'legend.facecolor': self.bg_color,
-                'legend.edgecolor': self.edge_color,
-            })
-        
-        # Update toolbar icons based on theme
-        if hasattr(self, 'toolbar'):
-            # Store the current view mode to restore it after updating icons
-            current_mode = self.toolbar.mode if hasattr(self.toolbar, 'mode') else ''
-            
-            # Force toolbar to update its icons by toggling the theme
-            if is_dark:
-                # For dark theme, use white icons with proper SVG styling
-                self.toolbar.setStyleSheet("""
-                    QToolButton {
-                        background: transparent;
-                        border: 1px solid transparent;
-                        border-radius: 4px;
-                        padding: 2px;
-                        margin: 0px;
-                        color: #ffffff;
-                    }
-                    QToolButton:hover {
-                        background: rgba(255, 255, 255, 0.1);
-                        border: 1px solid #666666;
-                    }
-                    QToolButton:pressed {
-                        background: rgba(255, 255, 255, 0.2);
-                    }
-                    QToolButton:disabled {
-                        color: #666666;
-                    }
-                    /* Style for the navigation toolbar icons */
-                    .QToolButton {
-                        color: #ffffff;
-                    }
-                    .QToolButton:disabled {
-                        color: #666666;
-                    }
-                """)
-            else:
-                # For light theme, use default styling
-                self.toolbar.setStyleSheet("""
-                    QToolButton {
-                        background: transparent;
-                        border: 1px solid transparent;
-                        border-radius: 4px;
-                        padding: 2px;
-                        margin: 0px;
-                        color: #000000;
-                    }
-                    QToolButton:hover {
-                        background: rgba(0, 0, 0, 0.05);
-                        border: 1px solid #cccccc;
-                    }
-                    QToolButton:pressed {
-                        background: rgba(0, 0, 0, 0.1);
-                    }
-                    QToolButton:disabled {
-                        color: #aaaaaa;
-                    }
-                """)
-            
-            # Force update the toolbar icons by toggling the mode
-            if hasattr(self.toolbar, '_active') and self.toolbar._active:
-                self.toolbar.pan()
-                self.toolbar.zoom()
-                
-                # Restore the previous view mode
-                if current_mode == 'zoom rect':
-                    self.toolbar.zoom()
-                elif current_mode == 'pan/zoom':
-                    self.toolbar.pan()
-        
-        # Update plot colors and redraw
+        self._style_drop_hint()
+
+        # Pull the canonical colours from the central design system and keep the
+        # per-tab attributes other methods rely on (self.bg_color, etc.) in sync.
+        m = theme_system.mpl_colors(self.current_theme)
+        self.text_color = m['fg']
+        self.bg_color = m['bg']
+        self.grid_color = m['grid']
+        self.edge_color = m['edge']
+
+        # Update matplotlib rcParams (no global plt.style.use side effects).
+        theme_system.apply_matplotlib_style(self.current_theme)
+
+        # Tint the navigation-toolbar icons; the toolbar chrome itself is styled
+        # by the global QToolBar rules in the application style sheet.
+        theme_system.style_navigation_toolbars(self, self.current_theme)
+
+        # Recolour every figure/axes owned by this tab.
         if hasattr(self, 'ax1') and hasattr(self, 'ax2'):
-            # Apply theme to all figures and axes
-            for fig in [getattr(self, attr, None) for attr in ['figure', 'roi_figure']]:
-                if fig is None:
-                    continue
-                    
-                # Update toolbar icons for the figure
-                for manager in plt._pylab_helpers.Gcf.get_all_fig_managers():
-                    if manager.canvas.figure == fig:
-                        # Set the toolbar style based on theme
-                        if is_dark:
-                            manager.toolbar.setStyleSheet("""
-                                QToolBar {
-                                    background-color: #2b2b2b;
-                                    border: 1px solid #444444;
-                                    border-radius: 4px;
-                                    spacing: 2px;
-                                    padding: 2px;
-                                }
-                                QToolButton {
-                                    background-color: transparent;
-                                    border: 1px solid transparent;
-                                    border-radius: 4px;
-                                    padding: 2px;
-                                    margin: 0px;
-                                }
-                                QToolButton:hover {
-                                    background-color: #3a3a3a;
-                                    border: 1px solid #555555;
-                                }
-                                QToolButton:pressed {
-                                    background-color: #4a4a4a;
-                                }
-                                QToolButton:disabled {
-                                    background-color: transparent;
-                                }
-                            """)
-                        else:
-                            manager.toolbar.setStyleSheet("""
-                                QToolBar {
-                                    background-color: #f0f0f0;
-                                    border: 1px solid #cccccc;
-                                    border-radius: 4px;
-                                    spacing: 2px;
-                                    padding: 2px;
-                                }
-                                QToolButton {
-                                    background-color: transparent;
-                                    border: 1px solid transparent;
-                                    border-radius: 4px;
-                                    padding: 2px;
-                                    margin: 0px;
-                                }
-                                QToolButton:hover {
-                                    background-color: #e0e0e0;
-                                    border: 1px solid #bbbbbb;
-                                }
-                                QToolButton:pressed {
-                                    background-color: #d0d0d0;
-                                }
-                                QToolButton:disabled {
-                                    background-color: transparent;
-                                }
-                            """)
-                if fig is not None:
-                    # Set figure background
-                    fig.set_facecolor(self.bg_color)
-                    fig.set_edgecolor(self.edge_color)
-                    
-                    # Update all axes in the figure
-                    for ax in fig.get_axes():
-                        # Set axes face color
-                        ax.set_facecolor(self.bg_color)
-                        
-                        # Update tick parameters
-                        ax.tick_params(axis='both', which='both', 
-                                     colors=self.text_color,
-                                     labelsize=9,
-                                     width=0.8,
-                                     length=4)
-                        
-                        # Update tick label colors
-                        for label in ax.get_xticklabels() + ax.get_yticklabels():
-                            label.set_color(self.text_color)
-                            label.set_fontsize(9)
-                        
-                        # Update spine colors and width
-                        for spine in ax.spines.values():
-                            spine.set_edgecolor(self.edge_color)
-                            spine.set_linewidth(1.0)
-                        
-                        # Update axis label colors and font size
-                        ax.xaxis.label.set_color(self.text_color)
-                        ax.yaxis.label.set_color(self.text_color)
-                        ax.xaxis.label.set_fontsize(10)
-                        ax.yaxis.label.set_fontsize(10)
-                        
-                        # Update title color and font size
-                        if ax.get_title():
-                            ax.title.set_color(self.text_color)
-                            ax.title.set_fontsize(11)
-                        
-                        # Update grid
-                        ax.grid(True, color=self.grid_color, linestyle=':', alpha=0.7, linewidth=0.7)
-                        
-                        # Update legend if it exists
-                        legend = ax.get_legend()
-                        if legend:
-                            legend.get_frame().set_facecolor(self.bg_color)
-                            legend.get_frame().set_edgecolor(self.edge_color)
-                            legend.get_frame().set_alpha(0.9)
-                            for text in legend.get_texts():
-                                text.set_color(self.text_color)
-            
-            # Force a redraw of the display with updated theme colors
+            for fig in (getattr(self, attr, None) for attr in ('figure', 'roi_figure')):
+                theme_system.apply_figure_theme(fig, self.current_theme)
+
+            # Redraw the canvases so the new background/edge colours take effect
+            # even when no image is loaded yet.
+            for canvas_attr in ('canvas', 'roi_canvas'):
+                canvas = getattr(self, canvas_attr, None)
+                if canvas is not None:
+                    canvas.draw_idle()
+
+            # Force a full redraw of the display when an image is present.
             if hasattr(self, 'current_image') and self.current_image is not None:
                 self.update_display(self.current_image, self.current_mask, keep_rois=True)
-        
-        # Force garbage collection
+
         import gc
         gc.collect()
     
@@ -2579,28 +2503,28 @@ class CellposeSegmentationTab(QWidget):
     
     def on_run_clicked(self, checked=None):
         """Handle run button click"""
-        print("\n=== Run button clicked ===")
-        print(f"Button checked state: {checked}")
-        print(f"Has image_paths: {hasattr(self, 'image_paths')}")
+        dprint("\n=== Run button clicked ===")
+        dprint(f"Button checked state: {checked}")
+        dprint(f"Has image_paths: {hasattr(self, 'image_paths')}")
         if hasattr(self, 'image_paths'):
-            print(f"Number of images: {len(self.image_paths)}")
-        print(f"Has image_list: {hasattr(self, 'image_list')}")
+            dprint(f"Number of images: {len(self.image_paths)}")
+        dprint(f"Has image_list: {hasattr(self, 'image_list')}")
         if hasattr(self, 'image_list'):
-            print(f"Image list count: {self.image_list.count()}")
+            dprint(f"Image list count: {self.image_list.count()}")
             
         if not hasattr(self, 'image_paths') or not self.image_paths:
             error_msg = "Error: No images loaded!"
-            print(error_msg)
+            dprint(error_msg)
             self.update_status(error_msg)
             return
             
         if not hasattr(self, 'image_list') or self.image_list.count() == 0:
             error_msg = "Error: No images in the list!"
-            print(error_msg)
+            dprint(error_msg)
             self.update_status(error_msg)
             return
             
-        print(f"Proceeding to run_segmentation with {self.image_list.count()} images")
+        dprint(f"Proceeding to run_segmentation with {self.image_list.count()} images")
         self.show_processing_dialog("Running segmentation...")
         self.run_segmentation()
         self.close_processing_dialog()
@@ -2628,27 +2552,27 @@ class CellposeSegmentationTab(QWidget):
                 filtered_masks[mask > 0] = current_label
                 current_label += 1
         
-        print(f"Filtered out {masks.max() - (current_label - 1)} cells smaller than {min_size} pixels")
+        dprint(f"Filtered out {masks.max() - (current_label - 1)} cells smaller than {min_size} pixels")
         return filtered_masks
     
     def run_segmentation(self):
         """Run Cellpose segmentation on selected images"""
-        print("\n=== Starting run_segmentation ===")
-        print(f"Number of images: {len(self.image_paths) if hasattr(self, 'image_paths') else 'No image_paths'}")
-        print(f"Image list count: {self.image_list.count() if hasattr(self, 'image_list') else 'No image_list'}")
+        dprint("\n=== Starting run_segmentation ===")
+        dprint(f"Number of images: {len(self.image_paths) if hasattr(self, 'image_paths') else 'No image_paths'}")
+        dprint(f"Image list count: {self.image_list.count() if hasattr(self, 'image_list') else 'No image_list'}")
         
         if not hasattr(self, 'image_paths') or not self.image_paths:
             error_msg = "Error: No images loaded!"
-            print(error_msg)
+            dprint(error_msg)
             self.update_status(error_msg)
             return
             
         # Get selected items or all if none selected
         selected_items = self.image_list.selectedItems()
-        print(f"Selected items: {len(selected_items)}")
+        dprint(f"Selected items: {len(selected_items)}")
         if not selected_items:
             selected_items = [self.image_list.item(i) for i in range(self.image_list.count())]
-            print(f"Using all {len(selected_items)} items")
+            dprint(f"Using all {len(selected_items)} items")
             
         # Get current parameters
         model_type = self.model_combo.currentText()
@@ -2656,24 +2580,24 @@ class CellposeSegmentationTab(QWidget):
         flow_threshold = self.flow_spin.value()
         cellprob_threshold = self.cellprob_spin.value()
         
-        print(f"Model: {model_type}, Diameter: {diameter}, Flow: {flow_threshold}, CellProb: {cellprob_threshold}")
+        dprint(f"Model: {model_type}, Diameter: {diameter}, Flow: {flow_threshold}, CellProb: {cellprob_threshold}")
         
         # Initialize model if needed
         try:
-            print(f"Initializing Cellpose model with type: {model_type}")
+            dprint(f"Initializing Cellpose model with type: {model_type}")
             # Check available models
-            print(f"Available models: {models.MODEL_NAMES}")
+            dprint(f"Available models: {models.MODEL_NAMES}")
             
             # For newer versions of Cellpose, we need to use CellposeModel
             if hasattr(models, 'CellposeModel'):
-                print("Using CellposeModel (newer API)")
+                dprint("Using CellposeModel (newer API)")
                 self.model = models.CellposeModel(
                     model_type=model_type,
                     gpu=_safe_cuda_available()
                 )
             # Fallback to older API if needed
             elif hasattr(models, 'Cellpose'):
-                print("Using Cellpose (older API)")
+                dprint("Using Cellpose (older API)")
                 self.model = models.Cellpose(
                     model_type=model_type,
                     gpu=_safe_cuda_available(),
@@ -2697,7 +2621,7 @@ class CellposeSegmentationTab(QWidget):
                     img = img[np.argmax([np.mean(frame) for frame in img])]
                 
                 # Run segmentation
-                print(f"Running segmentation with diameter={diameter}, flow_threshold={flow_threshold}, cellprob_threshold={cellprob_threshold}")
+                dprint(f"Running segmentation with diameter={diameter}, flow_threshold={flow_threshold}, cellprob_threshold={cellprob_threshold}")
                 
                 # Convert image to float32 and normalize if needed
                 if img.dtype != np.float32:
@@ -2736,26 +2660,13 @@ class CellposeSegmentationTab(QWidget):
                     self.update_display(self.current_image, filtered_masks)
                     self.populate_roi_list()  # Make sure ROI list is updated
                     self.update_status(f"Segmentation complete. Found {len(np.unique(filtered_masks))-1} cells after filtering.")
-                    print(f"Filtered out {len(np.unique(masks)) - len(np.unique(filtered_masks))} cells smaller than {min_cell_size} pixels")
+                    dprint(f"Filtered out {len(np.unique(masks)) - len(np.unique(filtered_masks))} cells smaller than {min_cell_size} pixels")
                     
-                    # Process masks if outline mode is enabled
+                    # Process masks if outline-only mode is enabled. In "segment
+                    # both" mode the whole-cell mask stays on screen (and editable);
+                    # its outline is derived at save time.
                     if hasattr(self, 'outline_check') and self.outline_check.isChecked():
-                        outlines = np.zeros_like(filtered_masks, dtype=np.uint16)
-                        for label_id in np.unique(filtered_masks):
-                            if label_id == 0:  # Skip background
-                                continue
-                                
-                            # Create binary mask for current label
-                            mask = (filtered_masks == label_id).astype(np.uint8)
-                            
-                            # Find contours
-                            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                            
-                            # Draw contours with specified thickness
-                            thickness = self.outline_thickness_spin.value() if hasattr(self, 'outline_thickness_spin') else 1
-                            # Convert label_id to int and use it as the color (grayscale)
-                            cv2.drawContours(outlines, contours, -1, int(label_id), thickness=thickness)
-                        
+                        outlines = self._labels_to_outline(filtered_masks)
                         # Update display with outlines
                         self.current_mask = outlines
                         self.update_display(self.current_image, self.current_mask)
@@ -2763,7 +2674,7 @@ class CellposeSegmentationTab(QWidget):
             except Exception as e:
                 error_msg = f"Error processing {os.path.basename(image_path)}: {str(e)}"
                 self.update_status(error_msg)
-                print(error_msg)
+                dprint(error_msg)
     
     def save_results(self, output_dir=None, transfer_to_fret=False):
         # If we have current_labels from ROI editing, make sure it's used for saving
@@ -2804,9 +2715,14 @@ class CellposeSegmentationTab(QWidget):
             output_dir = os.path.join(image_dir, 'segmented')
             os.makedirs(output_dir, exist_ok=True)
             
-            # Determine prefix based on outline mode
-            prefix = "outline_segmented_" if hasattr(self, 'outline_check') and self.outline_check.isChecked() else "whole-cell_segmented_"
-            
+            # Determine prefix based on segmentation mode
+            if self._segment_both_enabled():
+                prefix = "both_segmented_"
+            elif hasattr(self, 'outline_check') and self.outline_check.isChecked():
+                prefix = "outline_segmented_"
+            else:
+                prefix = "whole-cell_segmented_"
+
             # Create output filename with appropriate prefix in the segmented folder
             base_name = os.path.splitext(base_name)[0] + '.tif'
             output_filename = f"{prefix}{base_name}"
@@ -2820,43 +2736,44 @@ class CellposeSegmentationTab(QWidget):
                 'Min Cell Size': str(self.minsize_spin.value())
             }
             
-            print(f"Saving results to: {output_path}")
-            print(f"Current mask shape: {self.current_mask.shape if hasattr(self, 'current_mask') else 'None'}")
+            dprint(f"Saving results to: {output_path}")
+            dprint(f"Current mask shape: {self.current_mask.shape if hasattr(self, 'current_mask') else 'None'}")
             
             # Use current_labels if available (for ROI modifications), otherwise use current_mask
             mask_to_save = self.current_labels if hasattr(self, 'current_labels') and self.current_labels is not None else self.current_mask
-            
-            # Create a list to hold all frames, starting with the mask
-            frames_to_save = [mask_to_save.astype(np.uint16)]
-            
+
             # Get the original image data (from either CZI or TIFF)
             original_img = None
             if hasattr(self, 'original_czi_data') and self.original_czi_data is not None:
                 original_img = self.original_czi_data
-                print(f"Original CZI data shape: {original_img.shape}")
+                dprint(f"Original CZI data shape: {original_img.shape}")
             elif hasattr(self, 'original_tiff_data') and self.original_tiff_data is not None:
                 original_img = self.original_tiff_data
-                print(f"Original TIFF data shape: {original_img.shape}")
-            
-            # Add original frames to the list, preserving the raw intensity
-            # values exactly (no [0, 1] rescaling -- see intensity_to_uint16).
-            if original_img is not None:
-                if len(original_img.shape) == 3:  # Multi-frame image
-                    for frame in original_img:
+                dprint(f"Original TIFF data shape: {original_img.shape}")
+
+            if self._segment_both_enabled():
+                # Combined membrane + whole-cell stack for the Intensity tab:
+                # [outline, filled, ...raw channels in input order].
+                frames_to_save = self._both_stack_frames(mask_to_save, original_img)
+            else:
+                # Canonical [label, FRET, Donor, Acceptor]: mask first, then the raw
+                # frames reordered per the channel registry. Raw intensity values are
+                # preserved exactly (no [0, 1] rescaling -- see intensity_to_uint16).
+                frames_to_save = [mask_to_save.astype(np.uint16)]
+                if original_img is not None:
+                    for frame in self._ordered_analysis_frames(original_img):
                         frames_to_save.append(intensity_to_uint16(frame))
-                else:  # Single frame image
-                    frames_to_save.append(intensity_to_uint16(original_img))
             
             # Print debug info about frame shapes
-            print("Frame shapes being saved:")
+            dprint("Frame shapes being saved:")
             for i, frame in enumerate(frames_to_save):
-                print(f"  Frame {i}: {frame.shape} (dtype: {frame.dtype})")
+                dprint(f"  Frame {i}: {frame.shape} (dtype: {frame.dtype})")
             
             # Save all frames at once with tifffile.imwrite
             tifffile.imwrite(output_path, frames_to_save, photometric='minisblack',
                         metadata={'axes': 'CYX'}, dtype=np.uint16)
             
-            print(f"Successfully saved: {output_path}")
+            dprint(f"Successfully saved: {output_path}")
             self.update_status(f"Segmentation saved to: {os.path.basename(output_path)}")
             
             # If transfer to FRET was requested, do it now
@@ -2865,14 +2782,14 @@ class CellposeSegmentationTab(QWidget):
                     self.fret_tab.load_segmentation(output_path)
                     self.update_status(f"Segmentation saved and transferred to FRET tab: {os.path.basename(output_path)}")
                 except Exception as e:
-                    print(f"Error transferring to FRET tab: {str(e)}")
+                    dprint(f"Error transferring to FRET tab: {str(e)}")
             
             return [output_path]
             
         except Exception as e:
             error_msg = f"Failed to save results: {str(e)}"
             self.update_status(error_msg)
-            print(error_msg)
+            dprint(error_msg)
             return []
     
     def batch_segment_and_transfer(self):
@@ -3126,12 +3043,13 @@ class CellposeSegmentationTab(QWidget):
                 if len(img.shape) == 2:
                     img = img[np.newaxis, :, :]
                     
-                # Prepare frames with label first, then all original frames in their original order
+                # Prepare frames: label first, then the raw frames reordered per the
+                # channel registry into canonical FRET, Donor, Acceptor order.
                 # Use current_labels if available (contains manual edits), otherwise use current_mask
                 mask_to_save = self.current_labels if hasattr(self, 'current_labels') and self.current_labels is not None else self.current_mask
                 frames_to_save = [intensity_to_uint16(mask_to_save)]  # Label first with manual edits if available
-                # Then all original frames, preserving their raw intensity values.
-                frames_to_save.extend(intensity_to_uint16(frame) for frame in img)
+                frames_to_save.extend(
+                    intensity_to_uint16(frame) for frame in self._ordered_analysis_frames(img))
 
                 # Save as a multi-frame TIFF with label as first frame
                 tifffile.imwrite(output_path, np.stack(frames_to_save, axis=0),
@@ -3203,7 +3121,30 @@ class CellposeSegmentationTab(QWidget):
     def send_to_acceptor(self):
         """Send current image to Acceptor channel without group assignment"""
         self._transfer_to_channel('acceptor')
-    
+
+    def send_to_intensity(self):
+        """Save the current segmentation and add it to the Intensity Analysis tab.
+
+        The saved-stack layout follows the current segmentation mode: "Segment
+        both" writes [outline, filled, ...raw channels] for membrane-vs-whole-cell
+        analysis; otherwise the canonical [label, ...channels] stack is written and
+        the Intensity tab can still analyse the whole cell only.
+        """
+        main_window = self.window()
+        intensity_tab = getattr(main_window, 'intensity_tab', None)
+        if intensity_tab is None or not hasattr(intensity_tab, 'add_image_paths'):
+            self.update_status("Intensity Analysis tab is not available.")
+            return
+        if not self._segment_both_enabled():
+            self.update_status(
+                "Tip: enable 'Segment both (membrane + whole-cell)' for membrane analysis. "
+                "Saving whole-cell only.")
+        saved = self.save_results()
+        if not saved:
+            return
+        intensity_tab.add_image_paths(saved)
+        self.update_status(f"Sent to Intensity Analysis tab: {os.path.basename(saved[0])}")
+
     def save_and_transfer(self):
         """Save results and transfer to FRET tab with optional group assignment"""
         # Get selected items or all if none selected
@@ -3417,49 +3358,60 @@ class BatchWorker(QThread):
                     os.makedirs(output_dir, exist_ok=True)
                     base_name = os.path.splitext(os.path.basename(image_path))[0]
                     
-                    # Determine prefix based on outline mode
-                    prefix = "outline_segmented_" if hasattr(self.parent, 'outline_check') and self.parent.outline_check.isChecked() else "whole-cell_segmented_"
-                    output_path = os.path.join(output_dir, f"{prefix}{base_name}.tif")
-                    
                     # Load the original multi-frame image
                     original_img = tifffile.imread(image_path)
-                    
-                    # Create a list to hold all frames (mask first, then original frames)
-                    frames_to_save = [masks.astype(np.uint16)]
-                    
-                    # Add original frames, preserving raw intensity values.
-                    if len(original_img.shape) == 3:  # Multi-frame image
-                        for frame in original_img:
+
+                    both_mode = self.parent._segment_both_enabled()
+                    if both_mode:
+                        # Combined membrane + whole-cell stack for the Intensity tab:
+                        # [outline, filled, ...raw channels in input order].
+                        prefix = "both_segmented_"
+                        frames_to_save = self.parent._both_stack_frames(masks, original_img)
+                        expected_frames = len(frames_to_save)
+                    else:
+                        prefix = "outline_segmented_" if hasattr(self.parent, 'outline_check') and self.parent.outline_check.isChecked() else "whole-cell_segmented_"
+                        # Mask first, then the raw frames reordered per the channel
+                        # registry into canonical FRET, Donor, Acceptor order.
+                        frames_to_save = [masks.astype(np.uint16)]
+                        for frame in self.parent._ordered_analysis_frames(original_img):
                             frames_to_save.append(intensity_to_uint16(frame))
-                    else:  # Single frame image
-                        frames_to_save.append(intensity_to_uint16(original_img))
-                    
+                        expected_frames = len(frames_to_save)
+                    output_path = os.path.join(output_dir, f"{prefix}{base_name}.tif")
+
                     # Save all frames as a multi-page TIFF
                     tifffile.imwrite(output_path, frames_to_save, photometric='minisblack',
                         metadata={'axes': 'CYX'}, dtype=np.uint16)
-                    
+
                     # Verify the file was saved and has the expected number of frames
                     if not os.path.exists(output_path):
                         self.error.emit(f"  Error: Failed to save {output_path}")
                         continue
-                        
+
                     # Verify the saved file has the expected number of frames
                     try:
                         with tifffile.TiffFile(output_path) as tif:
                             num_frames = len(tif.pages)
-                            expected_frames = 4  # Mask + 3 original frames
                             if num_frames != expected_frames:
                                 self.error.emit(f"  Warning: Saved {num_frames} frames, expected {expected_frames}")
                     except Exception as e:
                         self.error.emit(f"  Warning: Could not verify saved file: {str(e)}")
-                        
-                    # Transfer to FRET tab
-                    self.progress.emit(f"  Transferring to FRET tab: {output_path}")
-                    if self.transfer_to_fret(output_path):
-                        transferred_count += 1
-                        self.progress.emit(f"  Successfully transferred {os.path.basename(output_path)}")
+
+                    if both_mode:
+                        # "Both" stacks are not FRET-compatible; route them to the
+                        # Intensity Analysis tab when it is available.
+                        if self.transfer_to_intensity(output_path):
+                            transferred_count += 1
+                            self.progress.emit(f"  Sent to Intensity tab: {os.path.basename(output_path)}")
+                        else:
+                            self.progress.emit(f"  Saved (Intensity tab unavailable): {os.path.basename(output_path)}")
                     else:
-                        self.error.emit(f"  Failed to transfer {os.path.basename(output_path)}")
+                        # Transfer to FRET tab
+                        self.progress.emit(f"  Transferring to FRET tab: {output_path}")
+                        if self.transfer_to_fret(output_path):
+                            transferred_count += 1
+                            self.progress.emit(f"  Successfully transferred {os.path.basename(output_path)}")
+                        else:
+                            self.error.emit(f"  Failed to transfer {os.path.basename(output_path)}")
                     
                 except Exception as e:
                     error_msg = f"Error processing {os.path.basename(image_path)}: {str(e)}"
@@ -3537,26 +3489,12 @@ class BatchWorker(QThread):
         min_size = self.parent.minsize_spin.value() if hasattr(self.parent, 'minsize_spin') else 10
         filtered_masks = self.parent.filter_small_objects(masks, min_size)
         
-        # Apply outline processing if enabled
-        if hasattr(self.parent, 'outline_check') and self.parent.outline_check.isChecked():
-            outlines = np.zeros_like(filtered_masks, dtype=np.uint16)
-            for label_id in np.unique(filtered_masks):
-                if label_id == 0:  # Skip background
-                    continue
-                    
-                # Create binary mask for current label
-                mask = (filtered_masks == label_id).astype(np.uint8)
-                
-                # Find contours
-                contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                
-                # Draw contours with specified thickness
-                thickness = self.parent.outline_thickness_spin.value() if hasattr(self.parent, 'outline_thickness_spin') else 1
-                # Convert label_id to int and use it as the color (grayscale)
-                cv2.drawContours(outlines, contours, -1, int(label_id), thickness=thickness)
-            
-            return outlines
-        
+        # Apply outline processing if outline-only mode is enabled. "Segment both"
+        # keeps the filled mask here and derives the outline at save time.
+        if (hasattr(self.parent, 'outline_check') and self.parent.outline_check.isChecked()
+                and not self.parent._segment_both_enabled()):
+            return self.parent._labels_to_outline(filtered_masks)
+
         return filtered_masks
 
     def get_best_frame(self, img):
@@ -3659,7 +3597,20 @@ class BatchWorker(QThread):
             import traceback
             traceback.print_exc()
             return False
-    
+
+    def transfer_to_intensity(self, saved_path):
+        """Route a combined membrane+whole-cell stack to the Intensity tab."""
+        try:
+            main_window = self.parent.window()
+            intensity_tab = getattr(main_window, 'intensity_tab', None)
+            if intensity_tab is None or not hasattr(intensity_tab, 'add_image_paths'):
+                return False
+            intensity_tab.add_image_paths([saved_path], group=self.group_name or None)
+            return True
+        except Exception as e:
+            self.error.emit(f"Intensity transfer error: {str(e)}")
+            return False
+
     def stop(self):
         """Stop the batch processing"""
         self.running = False

@@ -1,6 +1,10 @@
 """
 Bleed-through calculation tab for the SONLab FRET Analysis Tool
 """
+try:
+    from GUI.debug import dprint
+except (ImportError, ModuleNotFoundError):
+    from debug import dprint
 import os
 import sys
 import numpy as np
@@ -23,8 +27,12 @@ from PyQt5.QtGui import QImage
 
 try:
     from GUI.bt_calculation import fit_and_plot, process_donor_only_samples, process_acceptor_only_samples, linear, exponential
+    from GUI import theme as theme_system
+    from GUI import widgets as ui_widgets
 except ImportError or ModuleNotFoundError:
     from bt_calculation import fit_and_plot, process_donor_only_samples, process_acceptor_only_samples, linear, exponential
+    import theme as theme_system
+    import widgets as ui_widgets
 
 class AnalysisChannelTab(QWidget):
     fit_confirmation_signal = pyqtSignal()
@@ -43,6 +51,11 @@ class AnalysisChannelTab(QWidget):
 
         # Flag to avoid auto-refit when thresholds applied
         self.threshold_active = False
+
+        # Persistent threshold-guide-line state. The lines survive plot rebuilds
+        # (figure.clear wipes the artists, so we re-draw them when visible).
+        self._threshold_lines = []
+        self._threshold_lines_visible = False
 
         self.zoom_timer = QTimer(self)
         self.zoom_timer.setSingleShot(True)
@@ -85,18 +98,23 @@ class AnalysisChannelTab(QWidget):
         settings_layout.addWidget(self.threshold_group)
 
         self.run_button = QPushButton(f"Run {self.channel_name} Analysis")
+        self.run_button.setObjectName("primaryButton")
         self.run_button.clicked.connect(self.run_analysis)
+        ui_widgets.set_button_icon(self.run_button, "play", on_accent=True)
         settings_layout.addWidget(self.run_button)
 
         confirm_reset_layout = QHBoxLayout()
         self.confirm_button = QPushButton("Confirm Fit")
+        self.confirm_button.setObjectName("successButton")
         self.confirm_button.clicked.connect(self.confirm_fit)
         self.confirm_button.setEnabled(False)
+        ui_widgets.set_button_icon(self.confirm_button, "check", on_accent=True)
         confirm_reset_layout.addWidget(self.confirm_button)
 
         self.reset_button = QPushButton("Reset")
         self.reset_button.clicked.connect(self.reset_analysis)
         self.reset_button.setEnabled(False)
+        ui_widgets.set_button_icon(self.reset_button, "refresh")
         confirm_reset_layout.addWidget(self.reset_button)
         settings_layout.addLayout(confirm_reset_layout)
 
@@ -123,11 +141,18 @@ class AnalysisChannelTab(QWidget):
         buttons_layout = QHBoxLayout()
         self.add_button = QPushButton("Add")
         self.add_button.clicked.connect(add_method)
+        ui_widgets.set_button_icon(self.add_button, "folder")
         self.remove_button = QPushButton("Remove")
         self.remove_button.clicked.connect(remove_method)
+        ui_widgets.set_button_icon(self.remove_button, "trash")
+        self.metadata_button = QPushButton("Metadata")
+        self.metadata_button.setToolTip("View the metadata / tags of the selected image.")
+        self.metadata_button.clicked.connect(self.view_metadata)
+        ui_widgets.set_button_icon(self.metadata_button, "info")
         buttons_layout.addWidget(self.add_button)
         buttons_layout.addWidget(self.remove_button)
-        
+        buttons_layout.addWidget(self.metadata_button)
+
         layout.addWidget(self.image_list)
         layout.addLayout(buttons_layout)
 
@@ -136,12 +161,9 @@ class AnalysisChannelTab(QWidget):
         self.preview_label.setAlignment(Qt.AlignCenter)
         self.preview_label.setFixedHeight(180)
         # Set initial style according to theme
-        app = QApplication.instance()
-        palette = app.palette()
-        is_dark = palette.window().color().lightness() < 128
-        bg_col = '#2b2b2b' if is_dark else '#f8f8f8'
-        border_col = '#555' if is_dark else '#ccc'
-        self.preview_label.setStyleSheet(f"border: 1px solid {border_col}; background: {bg_col};")
+        c = theme_system.palette(theme_system.current_theme_name())
+        self.preview_label.setStyleSheet(
+            f"border: 1px solid {c['border']}; background: {c['base']};")
         layout.addWidget(self.preview_label)
 
         # Update preview when selection changes
@@ -172,8 +194,10 @@ class AnalysisChannelTab(QWidget):
             self.sample_size_spin.valueChanged.connect(lambda v: self.config.set(f'bt.{self.channel_name}.sample_size', int(v)))
             # restore sampling enabled state
             self.sampling_check.setChecked(self.config.get(f'bt.{self.channel_name}.sampling_enabled', False))
-            self.sample_size_spin.setEnabled(self.sampling_check.isChecked())
-        self.sample_size_spin.setEnabled(False)
+        # The sample-size field is only meaningful when sampling is enabled; keep it
+        # in sync with the checkbox (previously an unconditional disable clobbered the
+        # restored state so the field was always greyed out on startup).
+        self.sample_size_spin.setEnabled(self.sampling_check.isChecked())
         self.add_info_icon(layout, "Random Sampling:", self.sampling_check, "Enable to use a random subset of pixels.")
         layout.addRow("Sample Size:", self.sample_size_spin)
 
@@ -224,7 +248,7 @@ class AnalysisChannelTab(QWidget):
         self.current_theme = 'dark' if is_dark_theme else 'light'
         
         # Create figure with theme-appropriate colors
-        self.figure = plt.figure(facecolor='#2b2b2b' if is_dark_theme else 'white')
+        self.figure = plt.figure(facecolor=theme_system.mpl_colors(self.current_theme)['bg'])
         self.canvas = FigureCanvas(self.figure)
         self.toolbar = NavigationToolbar(self.canvas, plot_widget)
         # Apply initial toolbar theme
@@ -261,50 +285,21 @@ class AnalysisChannelTab(QWidget):
         """Update plot colors based on current theme"""
         if not hasattr(self, 'figure') or not self.figure:
             return
-            
-        is_dark = self.current_theme == 'dark'
-        text_color = '#f0f0f0' if is_dark else 'black'
-        bg_color = '#2b2b2b' if is_dark else 'white'
-        grid_color = '#3a3a3a' if is_dark else '#e0e0e0'
-        edge_color = '#6d6d6d' if is_dark else '#cccccc'
-        
-        # Update figure and axes
-        self.figure.set_facecolor(bg_color)
-        for ax in self.figure.get_axes():
-            ax.set_facecolor(bg_color)
-            ax.tick_params(colors=text_color)
-            for spine in ax.spines.values():
-                spine.set_edgecolor(edge_color)
-            if ax.get_xlabel():
-                ax.xaxis.label.set_color(text_color)
-            if ax.get_ylabel():
-                ax.yaxis.label.set_color(text_color)
-            if ax.get_title():
-                ax.title.set_color(text_color)
-            ax.grid(color=grid_color, alpha=0.3)
-            
-            # Update legend if it exists
-            legend = ax.get_legend()
-            if legend:
-                legend.get_frame().set_facecolor(bg_color)
-                legend.get_frame().set_edgecolor(edge_color)
-                for text in legend.get_texts():
-                    text.set_color(text_color)
-        
+
+        theme_system.apply_figure_theme(self.figure, self.current_theme)
+
         # Redraw the canvas
         if hasattr(self, 'canvas') and self.canvas:
             self.canvas.draw()
 
     def update_preview_theme(self):
         """Update preview label background to match theme."""
-        is_dark = self.current_theme == 'dark'
-        bg_col = '#2b2b2b' if is_dark else '#f8f8f8'
-        border_col = '#555' if is_dark else '#ccc'
-        self.preview_label.setStyleSheet(f"border: 1px solid {border_col}; background: {bg_col};")
+        c = theme_system.palette(self.current_theme)
+        self.preview_label.setStyleSheet(
+            f"border: 1px solid {c['border']}; background: {c['base']};")
 
     def update_formula_theme(self):
         """Re-render formula pixmaps to match text color in theme."""
-        text_color_dark = self.current_theme == 'dark'
         for model_name, details in self.coeffs_widget.items():
             if model_name in ('group',):
                 continue
@@ -314,40 +309,10 @@ class AnalysisChannelTab(QWidget):
                 label.setPixmap(pixmap)
 
     def update_toolbar_theme(self):
-        """Adjust navigation toolbar icon colors based on theme."""
+        """Tint the navigation toolbar icons to match the active theme."""
         if not hasattr(self, 'toolbar'):
             return
-        is_dark = self.current_theme == 'dark'
-        if is_dark:
-            # recolor icons to white
-            for action in self.toolbar.actions():
-                # Cache original icon once
-                if action.data() is None:
-                    action.setData(action.icon())
-                icon = action.icon()
-                if not icon.isNull():
-                    pixmap = icon.pixmap(24, 24)
-                    white_pix = self._pixmap_to_white(pixmap)
-                    action.setIcon(QIcon(white_pix))
-            self.toolbar.setStyleSheet("QToolButton {color: white;}")
-        else:
-            for action in self.toolbar.actions():
-                orig_icon = action.data()
-                if isinstance(orig_icon, QIcon):
-                    action.setIcon(orig_icon)
-            # clear stylesheet
-            self.toolbar.setStyleSheet("")
-
-    def _pixmap_to_white(self, pixmap):
-        """Return a white version of a mono pixmap."""
-        img = pixmap.toImage().convertToFormat(QImage.Format_ARGB32)
-        for y in range(img.height()):
-            for x in range(img.width()):
-                c = img.pixelColor(x, y)
-                # If pixel not transparent and dark, make white
-                if c.alpha() > 0 and c.red() < 128:
-                    img.setPixelColor(x, y, Qt.white)
-        return QPixmap.fromImage(img)
+        theme_system.style_toolbar(self.toolbar, self.current_theme)
 
     def on_zoom_pan(self, ax):
         if self.fit_is_confirmed:
@@ -358,13 +323,10 @@ class AnalysisChannelTab(QWidget):
 
     def add_info_icon(self, layout, label_text, widget, tooltip_text):
         row_layout = QHBoxLayout()
+        row_layout.setSpacing(4)
         row_layout.addWidget(QLabel(label_text))
         row_layout.addWidget(widget)
-        info_button = QPushButton()
-        info_button.setIcon(self.style().standardIcon(QStyle.SP_MessageBoxInformation))
-        info_button.setFlat(True)
-        info_button.setToolTip(tooltip_text)
-        row_layout.addWidget(info_button)
+        row_layout.addWidget(ui_widgets.info_button(tooltip_text))
         layout.addRow(row_layout)
 
     def dragEnterEvent(self, event):
@@ -377,6 +339,12 @@ class AnalysisChannelTab(QWidget):
         valid_files = [f for f in files if f.lower().endswith(('.tif', '.tiff'))]
         if valid_files:
             self.add_image_paths(valid_files)
+
+    def view_metadata(self):
+        """Show the metadata dialog for the currently selected image."""
+        row = self.image_list.currentRow()
+        path = self.image_paths[row] if 0 <= row < len(self.image_paths) else None
+        ui_widgets.show_metadata_dialog(self, path)
 
     def add_image(self):
         files, _ = QFileDialog.getOpenFileNames(self, f"Select {self.channel_name} Images", "", "TIFF Files (*.tif *.tiff)")
@@ -415,6 +383,9 @@ class AnalysisChannelTab(QWidget):
         self.results = {}
         self.fit_results = {}
         self.threshold_active = False
+        self._threshold_lines = []
+        self._threshold_lines_visible = False
+        self._sync_threshold_button()
 
         if hasattr(self, 'figure'):
             self.figure.clear()
@@ -455,7 +426,7 @@ class AnalysisChannelTab(QWidget):
             self.preview_label.setPixmap(pixmap)
         except Exception as e:
             self.preview_label.setText("Error loading preview")
-            print(f"Preview error: {e}")
+            dprint(f"Preview error: {e}")
 
     def render_latex_formula(self, model):
         formulas = {'Constant': r'$y = b$', 'Linear': r'$y = ax + b$', 'Exponential': r'$y = ae^{-kx} + b$'}
@@ -515,6 +486,7 @@ class AnalysisChannelTab(QWidget):
                 self.xmax_spin.setValue(float(np.max(xdata)))
                 self.ymin_spin.setValue(max(0.0, float(np.min(ydata))))
                 self.ymax_spin.setValue(min(1.0, float(np.max(ydata))))
+            self._restore_threshold_lines_if_visible()
             self.show_status("Analysis successful.", 'green')
             self.confirm_button.setEnabled(True)
             self.reset_button.setEnabled(False)
@@ -549,13 +521,17 @@ class AnalysisChannelTab(QWidget):
         self.zoom_connection_id = self.ax.callbacks.connect('xlim_changed', self.on_zoom_pan)
         self.pan_connection_id = self.ax.callbacks.connect('ylim_changed', self.on_zoom_pan)
         self.fit_results = fit_and_plot(x_zoomed, y_zoomed, x_label, y_label, title, self.ax, self.sampling_check.isChecked(), self.sample_size_spin.value())
+        # Preserve the user's zoom on BOTH axes. Previously the y-limit was force-reset
+        # to (0, 1) here, so vertical zoom was discarded even though the zoomed region
+        # was used to select the refit data. The ratio data is already physically
+        # bounded, so keeping the zoomed ylim is safe and matches the fit region.
         self.ax.set_xlim(xlim)
         self.ax.set_ylim(ylim)
-        self.ax.set_ylim(0,1)
         self.figure.tight_layout()
         self.canvas.draw()
         self.update_coefficient_display()
         self.notify_if_fit_unavailable()
+        self._restore_threshold_lines_if_visible()
         self.show_status("Refit on zoomed area successful.", 'green')
 
     def update_coefficient_display(self, _=None):
@@ -613,9 +589,17 @@ class AnalysisChannelTab(QWidget):
         self.remove_button.setEnabled(enabled)
         self.sigma_spin.setEnabled(enabled)
         self.sampling_check.setEnabled(enabled)
-        self.sample_size_spin.setEnabled(enabled)
+        # Sample size only makes sense when sampling is on (and controls unlocked).
+        self.sample_size_spin.setEnabled(enabled and self.sampling_check.isChecked())
         for button in self.radio_group.buttons():
             button.setEnabled(enabled)
+        # Lock the threshold controls too, so a confirmed fit can't be silently
+        # refit out from under the confirmation.
+        for w in (getattr(self, 'xmin_spin', None), getattr(self, 'xmax_spin', None),
+                  getattr(self, 'ymin_spin', None), getattr(self, 'ymax_spin', None),
+                  getattr(self, 'update_plot_btn', None), getattr(self, 'show_thresh_btn', None)):
+            if w is not None:
+                w.setEnabled(enabled)
 
     def confirm_fit(self):
         selected_button = self.radio_group.checkedButton()
@@ -663,6 +647,10 @@ class AnalysisChannelTab(QWidget):
         for model, coeffs in self.fit_results.items():
             if isinstance(coeffs, np.ndarray):
                 serializable_fit_results[model] = coeffs.tolist()
+            elif isinstance(coeffs, np.floating):
+                serializable_fit_results[model] = float(coeffs)
+            elif isinstance(coeffs, np.integer):
+                serializable_fit_results[model] = int(coeffs)
             else:
                 serializable_fit_results[model] = coeffs
 
@@ -697,6 +685,7 @@ class AnalysisChannelTab(QWidget):
             # on thresholded data). Rendering the loaded fit preserves them.
             x, y, x_label, y_label, title = self._get_channel_plot_data()
             self._render_loaded_fit(x, y, x_label, y_label, title)
+            self._restore_threshold_lines_if_visible()
             self.canvas.draw()
 
         self.confirm_button.setEnabled(True)
@@ -773,7 +762,8 @@ class AnalysisChannelTab(QWidget):
         self.update_plot_btn = QPushButton("Update Plot")
         self.update_plot_btn.clicked.connect(self.apply_thresholds_and_refit)
         self.show_thresh_btn = QPushButton("Show on Plot")
-        self.show_thresh_btn.clicked.connect(self.show_threshold_lines)
+        self.show_thresh_btn.setToolTip("Show or hide the threshold guide lines; the choice persists across refits.")
+        self.show_thresh_btn.clicked.connect(self.toggle_threshold_lines)
         btn_layout.addWidget(self.update_plot_btn)
         btn_layout.addWidget(self.show_thresh_btn)
 
@@ -812,8 +802,11 @@ class AnalysisChannelTab(QWidget):
         self.fit_results = fit_and_plot(x_sel, y_sel, x_label, y_label, title, self.ax, self.sampling_check.isChecked(), self.sample_size_spin.value())
         self.ax.set_ylim(0,1)
         self.figure.tight_layout(); self.canvas.draw()
-        # Draw threshold lines so they remain visible
-        self.show_threshold_lines()
+        # Applying thresholds implies the guide lines should be shown; make them
+        # visible and remember that so they persist on subsequent rebuilds.
+        self._threshold_lines_visible = True
+        self._sync_threshold_button()
+        self._draw_threshold_lines()
 
         self.update_coefficient_display(); self.notify_if_fit_unavailable()
         self.show_status("Plot updated with thresholds.", 'green')
@@ -821,20 +814,38 @@ class AnalysisChannelTab(QWidget):
         # set flag so future zoom callbacks ignored
         self.threshold_active = True
 
-    def show_threshold_lines(self):
-        """Draw threshold lines on plot to visualize current ranges."""
-        if not hasattr(self, 'ax'):
+    def toggle_threshold_lines(self):
+        """Show/hide the threshold guide lines and remember the choice so it
+        persists across refits and threshold updates."""
+        if not self.results:
+            self.show_status("Please run analysis first.", 'red')
+            return
+        self._threshold_lines_visible = not self._threshold_lines_visible
+        self._sync_threshold_button()
+        if self._threshold_lines_visible:
+            self._draw_threshold_lines()
+        else:
+            self._remove_threshold_lines()
+
+    def _sync_threshold_button(self):
+        """Keep the button label in step with the current visibility state."""
+        if hasattr(self, 'show_thresh_btn'):
+            self.show_thresh_btn.setText(
+                "Hide from Plot" if self._threshold_lines_visible else "Show on Plot")
+
+    def _draw_threshold_lines(self):
+        """Draw (or reposition) the four threshold guide lines on the current axes."""
+        if not hasattr(self, 'ax') or self.ax is None:
             return
         xmin, xmax = self.xmin_spin.value(), self.xmax_spin.value()
         ymin, ymax = self.ymin_spin.value(), self.ymax_spin.value()
 
         recreate = (
-            not hasattr(self, '_threshold_lines') or
+            not self._threshold_lines or
             len(self._threshold_lines) != 4 or
             any(ln.axes is None for ln in self._threshold_lines)
         )
         if recreate:
-            # Create lines first time
             self._threshold_lines = [
                 self.ax.axvline(xmin, color='purple', linestyle='--'),
                 self.ax.axvline(xmax, color='purple', linestyle='--'),
@@ -842,13 +853,31 @@ class AnalysisChannelTab(QWidget):
                 self.ax.axhline(ymax, color='purple', linestyle='--'),
             ]
         else:
-            # Update existing line positions
             self._threshold_lines[0].set_xdata([xmin, xmin])
             self._threshold_lines[1].set_xdata([xmax, xmax])
             self._threshold_lines[2].set_ydata([ymin, ymin])
             self._threshold_lines[3].set_ydata([ymax, ymax])
 
         self.canvas.draw_idle()
+
+    def _remove_threshold_lines(self):
+        """Remove the threshold guide-line artists from the axes."""
+        for ln in self._threshold_lines:
+            try:
+                ln.remove()
+            except Exception:
+                pass
+        self._threshold_lines = []
+        if hasattr(self, 'canvas'):
+            self.canvas.draw_idle()
+
+    def _restore_threshold_lines_if_visible(self):
+        """Re-draw the guide lines after a full plot rebuild (figure.clear wipes
+        the old artists) so the visible/hidden choice is persistent."""
+        # The previous artists belonged to the cleared figure; forget them.
+        self._threshold_lines = []
+        if self._threshold_lines_visible:
+            self._draw_threshold_lines()
 
 class BleedThroughTab(QWidget):
     # Signal emitted when theme changes
@@ -900,8 +929,10 @@ class BleedThroughTab(QWidget):
         self.save_button = QPushButton("Save Parameters")
         self.save_button.clicked.connect(self.save_parameters)
         self.save_button.setEnabled(False) # Disabled by default
+        ui_widgets.set_button_icon(self.save_button, "save")
         self.load_button = QPushButton("Load Parameters")
         self.load_button.clicked.connect(self.load_parameters)
+        ui_widgets.set_button_icon(self.load_button, "folder")
         save_load_layout.addWidget(self.save_button)
         save_load_layout.addWidget(self.load_button)
         save_load_group.setLayout(save_load_layout)
@@ -992,7 +1023,7 @@ class BleedThroughTab(QWidget):
                 saved_dirs.append(directory)
             except Exception as e:
                 failed_dirs.append(directory)
-                print(f"Failed to save parameters copy to {target}: {e}")
+                dprint(f"Failed to save parameters copy to {target}: {e}")
 
         # Build a concise summary of what happened.
         status = f"Parameters saved to {file_path}"

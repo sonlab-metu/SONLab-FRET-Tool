@@ -3,6 +3,10 @@ FRET Analysis Core Functions
 This module contains the core analysis functions for FRET data processing.
 """
 
+try:
+    from GUI.debug import dprint
+except (ImportError, ModuleNotFoundError):
+    from debug import dprint
 import numpy as np
 import tifffile as tiff
 from scipy.ndimage import gaussian_filter
@@ -79,13 +83,14 @@ def process_donor_only_samples(donor_paths, sigma=2, channel='S1'):
                 "S3 calculation requires 4-frame images (mask, FRET, Donor, Acceptor)."
             )
         
-        # Frame assignments
+        # Frame assignments. float32 is exact for 16-bit intensities and halves
+        # the transient memory of these full-frame temporaries vs float64.
         mask_frame = images[0] > 0  # boolean mask of labelled pixels
-        donor_raw = images[2].astype(float)
+        donor_raw = images[2].astype(np.float32)
         if channel == 'S1':
-            num_raw = images[1].astype(float)
+            num_raw = images[1].astype(np.float32)
         else: # S3
-            num_raw = images[3].astype(float)
+            num_raw = images[3].astype(np.float32)
         
         # Blur
         num_blur = apply_gaussian_blur(num_raw, sigma)
@@ -148,16 +153,16 @@ def process_acceptor_only_samples(acceptor_paths, sigma=2, channel='S2'):
             # mask, FRET, Acceptor
             mask_frame = images[0] > 0
             if channel == 'S2':
-                num_raw = images[1].astype(float)
-            acceptor_raw = images[2].astype(float)
+                num_raw = images[1].astype(np.float32)
+            acceptor_raw = images[2].astype(np.float32)
         elif n_frames == 4:
             # mask, FRET, Donor, Acceptor
             mask_frame = images[0] > 0
             if channel == 'S2':
-                num_raw = images[1].astype(float)
+                num_raw = images[1].astype(np.float32)
             else: # S4
-                num_raw = images[2].astype(float)
-            acceptor_raw = images[3].astype(float)
+                num_raw = images[2].astype(np.float32)
+            acceptor_raw = images[3].astype(np.float32)
         else:
             raise ValueError(
                 "Unsupported acceptor-only stack. Expected 3 or 4 frames (mask, FRET, [Donor,] Acceptor)."
@@ -214,37 +219,29 @@ def fit_and_plot(x_data, y_data, x_label, y_label, title, ax, use_sampling, samp
         Number of points to sample for plotting
     """
     
-    mask4 = y_data > 0 
-    non_zero4 = y_data[mask4]
-    # print(f'{ylabel}: {np.mean(non_zero4)}')
-
-    # Create a combined mask where both x_data and y_data are > 0
+    # Combined mask where both x_data and y_data are > 0. Boolean indexing
+    # already returns fresh arrays, so no extra copy is needed for plotting.
     mask = (x_data > 0) & (y_data > 0)
     x_data = x_data[mask]
     y_data = y_data[mask]
 
-    # Create a copy of the data for plotting
-    x_plot = x_data.copy()
-    y_plot = y_data.copy()
-    
     # Apply sampling if enabled – this should affect BOTH plotting and fitting.
     if use_sampling and len(x_data) > sample_size:
         np.random.seed(42)
         sample_indices = np.random.choice(len(x_data), size=sample_size, replace=False)
         x_data = x_data[sample_indices]
         y_data = y_data[sample_indices]
-        # Use the same subset for plotting
-        x_plot = x_data
-        y_plot = y_data
 
-    ax.scatter(x_plot, y_plot, label='Data', alpha=0.5, color='red', s=1)
+    ax.scatter(x_data, y_data, label='Data', alpha=0.5, color='red', s=1)
     x_fit = np.linspace(x_data.min(), x_data.max(), 400)
 
     coeffs = {}
     fit_lines = {}
 
-    # Calculate constant model as the average of y_data
-    avg_y = np.mean(y_data)
+    # Calculate constant model as the average of y_data. Cast to a native Python
+    # float so the coefficient stays JSON-serializable when parameters are saved
+    # (np.mean on a float32 array returns a numpy scalar).
+    avg_y = float(np.mean(y_data))
     fit_lines['Constant'] = np.full_like(x_fit, avg_y)
     coeffs['Constant'] = avg_y
 
@@ -255,7 +252,7 @@ def fit_and_plot(x_data, y_data, x_label, y_label, title, ax, use_sampling, samp
         coeffs['Linear'] = popt_linear
     except Exception as e:
         coeffs['Linear'] = None
-        print(f"Linear fit failed: {e}")
+        dprint(f"Linear fit failed: {e}")
 
     # Fit exponential model
     try:
@@ -280,7 +277,7 @@ def fit_and_plot(x_data, y_data, x_label, y_label, title, ax, use_sampling, samp
             coeffs['Exponential'] = popt_exponential
     except Exception as e:
         coeffs['Exponential'] = None
-        print(f"Exponential fit failed: {e}")
+        dprint(f"Exponential fit failed: {e}")
 
     # Plot all models
     for model, line_data in fit_lines.items():

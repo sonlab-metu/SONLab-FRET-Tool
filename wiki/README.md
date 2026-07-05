@@ -14,6 +14,7 @@ This folder holds the source Markdown for the project's **GitHub Wiki**. It is k
 | `Segmentation.md` | Cellpose & Manual Segmentation |
 | `Bleed-Through-Correction.md` | Bleed-Through Correction |
 | `FRET-Analysis.md` | FRET Analysis |
+| `Intensity-and-Densitometry.md` | Intensity / Densitometry |
 | `Results-and-Visualization.md` | Results and Visualization |
 | `Workflows-and-Data-Flow.md` | Workflows and Data Flow |
 | `File-Formats.md` | File Formats |

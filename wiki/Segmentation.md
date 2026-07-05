@@ -35,11 +35,18 @@ Found in the **Cellpose Parameters** panel. Hover the ⓘ icon next to each cont
 | **Flow Threshold** | `0.4` | 0.1–1.0 | Maximum allowed flow error per mask. Lower values are stricter (fewer, cleaner masks); higher values recover more cells but may add spurious ones. |
 | **Cell Prob. Threshold** | `0.0` | −6.0–6.0 | Detection probability cut-off. Lower values detect more (including faint) cells but admit more noise; raise it to keep only confident detections. |
 | **Min Cell Size** | `15000` px | 1–100000 | Objects smaller than this (in pixels) are removed after segmentation. |
-| **Generate outlines only** | on | — | When checked, the mask stores cell **outlines** instead of filled regions. Output files are prefixed `outline_segmented_`; otherwise `whole-cell_segmented_`. |
+| **Generate outlines only** | off | — | When checked, the mask stores cell **outlines** instead of filled regions. Output files are prefixed `outline_segmented_`; otherwise `whole-cell_segmented_`. |
+| **Segment both (membrane + whole-cell)** | off | — | When checked, saving/sending writes a single stack laid out as `[outline, filled, ...raw channels]` for the **[[Intensity and Densitometry]]** tab. The whole-cell mask stays on screen and editable; the outline (membrane band) is derived from it at save time. Files are prefixed `both_segmented_`. |
 | **Adjust outline thickness** | on | — | Enables the thickness control below. |
-| **Outline thickness** | `10` | 1–20 | Thickness (in pixels) of generated outlines. |
+| **Outline thickness** | `10` | 1–20 | Thickness (in pixels) of the membrane band. The band is drawn **inward** from the cell border by this many pixels, so it always lies inside the cell. |
 
 > **Tip:** if cells are merged together (under-segmentation), reduce the **Cell Diameter** or lower the **Flow Threshold**. If single cells are split into pieces (over-segmentation), increase the diameter. Remove debris by raising **Min Cell Size**.
+
+### Channel order (input frames)
+
+The **Channel Order** panel declares which frame of your raw input holds each channel (FRET, Donor, Acceptor). Segmentation reorders the saved stack to the canonical `[label, FRET, Donor, Acceptor]` layout the Bleed-Through and FRET tabs expect, so the analysis stays correct regardless of your acquisition order. The defaults (0, 1, 2) reproduce the common FRET/Donor/Acceptor ordering. This setting does **not** apply to *Segment both* output, which keeps the raw channels in their original order for the Intensity tab.
+
+The **Metadata** button opens the acquisition metadata (TIFF tags / CZI metadata) of the selected image.
 
 ---
 
@@ -96,7 +103,8 @@ Once the mask looks correct, choose how to forward it:
 | **Send to FRET Tab** | Saves and adds the segmented image directly to the FRET Analysis tab. |
 | **Send to Donor** | Sends the current segmented image to the Bleed-Through **Donor (S1)** channel. |
 | **Send to Acceptor** | Sends the current segmented image to the Bleed-Through **Acceptor (S2)** channel. |
-| **Batch Segment && Transfer** | Segments **all** loaded images with the current parameters and transfers them to the FRET tab, optionally tagging them with a group name. |
+| **Send to Intensity** | Saves the current segmentation and adds it to the **[[Intensity and Densitometry]]** tab. Enable **Segment both** first for membrane-vs-whole-cell analysis. |
+| **Batch Segment && Transfer** | Segments **all** loaded images with the current parameters and transfers them to the FRET tab (or, in *Segment both* mode, to the Intensity tab), optionally tagging them with a group name. |
 
 > **Note on data fidelity:** the saved stacks preserve the original raw pixel intensities of every channel (no rescaling), so they can be used directly for bleed-through and FRET calculations.
 
@@ -108,7 +116,7 @@ Segmentation results are saved as a **multi-frame TIFF** with:
 - **Frame 0:** the segmentation label mask.
 - **Frames 1…N:** the original image channels (FRET, Donor, Acceptor) in their original order.
 
-Files are written to a `segmented/` directory beside the input image and prefixed `outline_segmented_` or `whole-cell_segmented_` depending on the *Generate outlines only* setting. See **[[File Formats]]** for full details.
+Files are written to a `segmented/` directory beside the input image and prefixed `outline_segmented_` or `whole-cell_segmented_` depending on the *Generate outlines only* setting. With **Segment both** enabled the file is prefixed `both_segmented_` and holds `[outline, filled, ...raw channels]` for the Intensity tab. See **[[File Formats]]** for full details.
 
 ---
 

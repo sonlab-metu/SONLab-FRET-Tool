@@ -29,6 +29,13 @@ A detailed flow diagram for each stage is on its own page: **[[Segmentation]]**,
 │ 3. FRET Analysis                                                  │
 │    apply correction → efficiency maps → stats & figures          │
 └─────────────────────────────────────────────────────────────────┘
+
+ Segment both (membrane + whole-cell) ──► Send to Intensity ──┐
+                                                              ▼
+                                        ┌───────────────────────────┐
+                                        │ 4. Intensity / Densitometry│  membrane vs
+                                        │    (independent of FRET)   │  whole-cell,
+                                        └───────────────────────────┘  CTCF, stats
 ```
 
 ---
@@ -57,6 +64,7 @@ A detailed flow diagram for each stage is on its own page: **[[Segmentation]]**,
 | Data | Produced in | Consumed in | Mechanism |
 |------|-------------|-------------|-----------|
 | **Segmented stacks** (mask + channels) | Segmentation | Bleed-Through, FRET | *Send to Donor/Acceptor*, *Send to FRET*, *Batch Segment && Transfer*, or saved files |
+| **Membrane + whole-cell stacks** (`both_segmented_`) | Segmentation (*Segment both*) | Intensity / Densitometry | *Send to Intensity*, batch transfer, or saved files |
 | **Bleed-through coefficients** | Bleed-Through | FRET | Confirmed fits, shown in the FRET *Bleed-Through Parameters* panel; persisted in `bt_params.json` |
 | **Groups** | FRET (or set during batch transfer) | FRET statistics | Group tags drive aggregate comparisons |
 | **Efficiency maps & stats** | FRET | external tools | Exported as TIFF / CSV / figures |

@@ -1,3 +1,7 @@
+try:
+    from GUI.debug import dprint
+except (ImportError, ModuleNotFoundError):
+    from debug import dprint
 import os
 import sys
 import numpy as np
@@ -26,6 +30,13 @@ from PyQt5.QtCore import Qt, QTimer, QMetaObject, Q_ARG, pyqtSlot, QThread, QObj
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import QDialog
 import csv
+
+try:
+    from GUI import theme as theme_system
+    from GUI import widgets as ui_widgets
+except (ImportError, ModuleNotFoundError):
+    import theme as theme_system
+    import widgets as ui_widgets
 
 def resource_path(relative_path):
     """ Get absolute path to resource, works for dev and for PyInstaller """
@@ -78,121 +89,31 @@ class FretTab(QWidget):
         palette = app.palette()
         is_dark_theme = palette.window().color().lightness() < 128
         self.current_theme = 'dark' if is_dark_theme else 'light'
-        
-        # Update scrollbar styles for better visibility in dark theme
-        scrollbar_style = """
-            QScrollBar:horizontal {
-                border: none;
-                background: #2d2d2d;
-                height: 12px;
-                margin: 0px 0px 0px 0px;
-            }
-            QScrollBar::handle:horizontal {
-                background: #606060;
-                min-width: 20px;
-                border-radius: 6px;
-            }
-            QScrollBar::handle:horizontal:hover {
-                background: #707070;
-            }
-            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
-                width: 0px;
-                height: 0px;
-            }
-            QScrollBar:vertical {
-                border: none;
-                background: #2d2d2d;
-                width: 12px;
-                margin: 0px 0px 0px 0px;
-            }
-            QScrollBar::handle:vertical {
-                background: #606060;
-                min-height: 20px;
-                border-radius: 6px;
-            }
-            QScrollBar::handle:vertical:hover {
-                background: #707070;
-            }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-                width: 0px;
-                height: 0px;
-            }
-        """ if is_dark_theme else ""
-        
-        # Apply the style to the application
-        app.setStyleSheet(app.styleSheet() + scrollbar_style)
-        
-        # Update plot themes
+
+        # Keep matplotlib rcParams in step with the theme for any new figures.
+        theme_system.apply_matplotlib_style(self.current_theme)
+
+        # Tint every embedded navigation toolbar's icons so they stay legible
+        # (matplotlib's pixmap icons are not reachable by the global QSS).
+        theme_system.style_navigation_toolbars(self, self.current_theme)
+
+        # Recolour the existing plot canvases.
         self.update_plot_themes()
 
-    def _update_axes_theme(self, ax, is_dark):
-        """Update the theme of a single axes object."""
-        # Set colors based on theme
-        text_color = '#ffffff' if is_dark else '#000000'
-        grid_color = '#4a4a4a' if is_dark else '#e0e0e0'
-        face_color = '#1a1a1a' if is_dark else '#ffffff'
-        
-        # Update axes properties
-        ax.set_facecolor(face_color)
-        
-        # Update title and labels
-        ax.title.set_color(text_color)
-        ax.xaxis.label.set_color(text_color)
-        ax.yaxis.label.set_color(text_color)
-        
-        # Update tick colors
-        ax.tick_params(axis='x', colors=text_color)
-        ax.tick_params(axis='y', colors=text_color)
-        
-        # Update spines
-        for spine in ax.spines.values():
-            spine.set_edgecolor(text_color)
-        
-        # Update grid
-        ax.grid(True, color=grid_color, alpha=0.3)
-        
-        # Set a high-contrast color cycle for dark theme to ensure plot lines are visible
-        if is_dark:
-            bright_colors = [
-                '#FF6B6B',  # Red
-                '#4ECDC4',  # Turquoise
-                '#F7E967',  # Yellow
-                '#C44DFF',  # Purple
-                '#1E90FF',  # Blue
-                '#FFA500',  # Orange
-            ]
-            ax.set_prop_cycle(color=bright_colors)
-        else:
-            # Revert to Matplotlib default for light theme
-            ax.set_prop_cycle(None)
-
-        # Update legend if it exists
-        if ax.legend_ is not None:
-            legend = ax.legend_ 
-            frame = legend.get_frame()
-            if frame is not None:
-                frame.set_facecolor(face_color)
-                frame.set_edgecolor(text_color)
-            for text in legend.get_texts():
-                text.set_color(text_color)
-    
     def update_plot_themes(self):
-        is_dark = self.current_theme == 'dark'
-        
-        # Common figure parameters - using pure black for dark mode
-        figure_bg = '#1a1a1a' if is_dark else '#ffffff'  # Slightly off-black for better contrast
-        figure_params = {
-            'facecolor': figure_bg,
-            'edgecolor': '#4a4a4a' if is_dark else '#e0e0e0'
-        }
-        
-        # Canvas style sheet for dark/light mode
+        m = theme_system.mpl_colors(self.current_theme)
+
+        figure_bg = m['bg']
+        figure_params = {'facecolor': m['bg'], 'edgecolor': m['edge']}
+
+        # Canvas widget background matches the figure so there is no colour
+        # flash around the plot during resizes.
         canvas_style = f"""
             background-color: {figure_bg};
-            border: 1px solid {'#4a4a4a' if is_dark else '#e0e0e0'};
+            border: 1px solid {m['edge']};
             border-radius: 4px;
         """
-        
+
         # Update each figure if it exists
         for fig_attr, canvas_attr in [
             ('figure', 'canvas'),
@@ -215,26 +136,24 @@ class FretTab(QWidget):
                 
                 # Update all axes in the figure
                 for ax in fig.get_axes():
-                    self._update_axes_theme(ax, is_dark)
+                    self._update_axes_theme(ax)
                 
-                # Update canvas properties
+                # Update canvas properties. A single draw_idle per canvas is
+                # enough; the previous code redrew every canvas a second time in
+                # a follow-up loop.
                 if canvas is not None:
                     canvas.setStyleSheet(canvas_style)
-                    canvas.draw()
-                    
-        # Force redraw of all canvases
-        for canvas_attr in ['canvas', 'hist_canvas', 'box_canvas', 'agg_hist_canvas', 'agg_box_canvas', 'fourier_image_canvas', 'fft_canvas', 'cell_hist_canvas']:
-            canvas = getattr(self, canvas_attr, None)
-            if canvas is not None:
-                canvas.draw()
+                    canvas.draw_idle()
 
-    def _update_axes_theme(self, ax, is_dark):
-        # Define colors based on theme
-        text_color = '#ffffff' if is_dark else '#000000'  # Brighter white for dark mode
-        bg_color = '#1e1e1e' if is_dark else '#ffffff'    # Darker background for better contrast
-        grid_color = '#3a3a3a' if is_dark else '#e0e0e0'  # Slightly brighter grid for dark mode
-        edge_color = '#5a5a5a' if is_dark else '#cccccc'  # Brighter edge color for dark mode
-        
+    def _update_axes_theme(self, ax):
+        # Colours come from the central design system so every canvas tracks the
+        # active theme consistently.
+        m = theme_system.mpl_colors(self.current_theme)
+        text_color = m['fg']
+        bg_color = m['bg']
+        grid_color = m['grid']
+        edge_color = m['edge']
+
         # Set face colors
         ax.set_facecolor(bg_color)
         
@@ -746,14 +665,59 @@ class FretTab(QWidget):
         label_widget = QWidget()
         h_layout = QHBoxLayout(label_widget)
         h_layout.setContentsMargins(0, 0, 0, 0)
+        h_layout.setSpacing(4)
         h_layout.addWidget(QLabel(label_text))
-        info_button = QToolButton()
-        info_button.setIcon(self.style().standardIcon(QStyle.SP_MessageBoxInformation))
-        info_button.setToolTip(tooltip_text)
-        info_button.setStyleSheet("QToolButton { border: none; background: transparent; }")
-        h_layout.addWidget(info_button)
+        h_layout.addWidget(ui_widgets.info_button(tooltip_text))
         h_layout.addStretch()
         layout.addRow(label_widget, widget)
+
+    def _open_legend_popout(self, entries, title="Legend"):
+        """Show the group legend in its own window so a large number of groups
+        never crowds the plot. ``entries`` is a list of ``(color, label)`` tuples.
+        The window has its own publication-quality (300 DPI) save.
+        """
+        if not entries:
+            QMessageBox.information(self, "Legend", "No groups to show.")
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"{title} (Pop-out)")
+        layout = QVBoxLayout(dlg)
+
+        n = len(entries)
+        fig = plt.Figure(figsize=(4.8, max(1.0, 0.36 * n + 0.5)), dpi=100)
+        fig.set_facecolor('black' if self.current_theme == 'dark' else 'white')
+        ax = fig.add_subplot(111)
+        ax.axis('off')
+        handles = [plt.Rectangle((0, 0), 1, 1, fc=c, ec='black', linewidth=0.5, alpha=0.6)
+                   for c, _ in entries]
+        labels = [t for _, t in entries]
+        leg = ax.legend(handles, labels, loc='center', frameon=True, fontsize='small',
+                        ncol=1, handlelength=1.2, borderpad=0.8, labelspacing=0.5)
+        fg = 'white' if self.current_theme == 'dark' else 'black'
+        for txt in leg.get_texts():
+            txt.set_color(fg)
+        leg.get_frame().set_facecolor('0.15' if self.current_theme == 'dark' else '0.97')
+        leg.get_frame().set_edgecolor('0.5')
+
+        canvas = FigureCanvas(fig)
+        canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        layout.addWidget(canvas)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        save_btn = QPushButton("Save Legend")
+        save_btn.setToolTip("Save the legend as a high-resolution (300 DPI) image")
+        save_btn.clicked.connect(lambda: self.save_plot(fig, "legend"))
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dlg.accept)
+        btn_row.addWidget(save_btn)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+        if not hasattr(self, '_popup_refs'):
+            self._popup_refs = []
+        self._popup_refs.append((dlg, canvas, fig))
+        dlg.show()
 
     def _open_histogram_popout(self, figure, title):
         """Special handler for histogram popouts that recreates the plot from data"""
@@ -799,15 +763,20 @@ class FretTab(QWidget):
         lower_thr = self.lower_threshold_spinbox.value()
         upper_thr = self.upper_threshold_spinbox.value()
         
-        # Group data by image group
+        # Group data by image group. Also accumulate the pooled pixel sum/count per
+        # group so we can report a PIXEL-WEIGHTED mean (every thresholded pixel
+        # weighs equally, so larger cells contribute proportionally more) — this is
+        # deliberately different from the box plot, which averages per-cell means.
         group_hists = {}
+        group_pixel_sum = {}
+        group_pixel_count = {}
         for path, efficiencies in self.analysis_results.items():
             if selected_formula not in efficiencies or "_labels" not in efficiencies:
                 continue
             gname = self.image_groups.get(path, "Ungrouped")
             eff_map = efficiencies[selected_formula]
             labels_arr = efficiencies["_labels"]
-            
+
             for lbl in np.unique(labels_arr)[1:]:
                 mask = ((labels_arr == lbl) & np.isfinite(eff_map) & (eff_map > 0))
                 vals = eff_map[mask]
@@ -819,87 +788,85 @@ class FretTab(QWidget):
                 counts, _ = np.histogram(hist_vals, bins=edges)
                 pct = (counts / vals.size) * 100
                 group_hists.setdefault(gname, []).append(pct)
+                group_pixel_sum[gname] = group_pixel_sum.get(gname, 0.0) + float(hist_vals.sum())
+                group_pixel_count[gname] = group_pixel_count.get(gname, 0) + int(hist_vals.size)
         
         if not group_hists:
             QMessageBox.warning(self, "Error", "No valid data points found for histogram.")
             return
         
-        # Plot each group's histogram
+        # Plot each group's histogram. The legend is intentionally NOT drawn on the
+        # plot (it crowds the axes when there are many groups); instead we collect
+        # (color, label) entries for a separate, savable Legend window.
         colors = plt.cm.tab10.colors
         y_max = 0
-        
+        legend_entries = []
+
         for idx, (group, hist_list) in enumerate(group_hists.items()):
             hist_matrix = np.vstack(hist_list)
             mean = np.mean(hist_matrix, axis=0)
             std = np.std(hist_matrix, axis=0)
             sem = std / np.sqrt(hist_matrix.shape[0])
-            
+
             # Use SEM or SD based on radio button selection
             error_type = "SEM" if hasattr(self, 'sem_radio') and self.sem_radio.isChecked() else "SD"
             error_bars = sem if error_type == "SEM" else std
-            
+
             # Update y_max for axis limits
             y_max = max(y_max, np.max(mean + error_bars))
-            
-            # Plot with error bars
-            ax.errorbar(centers, mean, yerr=error_bars, fmt='-o', 
-                       color=colors[idx % len(colors)], 
-                       markersize=3, linewidth=1.2, 
-                       capsize=3, alpha=0.7, 
+
+            color = colors[idx % len(colors)]
+            ax.errorbar(centers, mean, yerr=error_bars, fmt='-o',
+                       color=color,
+                       markersize=3, linewidth=1.2,
+                       capsize=3, alpha=0.7,
                        label=f'{group} (n={len(hist_list)})')
-        
+
+            # Pixel-weighted mean for this group (pooled over all thresholded pixels).
+            pix_n = group_pixel_count.get(group, 0)
+            wmean = (group_pixel_sum.get(group, 0.0) / pix_n) if pix_n else 0.0
+            legend_entries.append((color,
+                                   f'{group}: weighted mean {wmean:.1f}%  (n={len(hist_list)} cells)'))
+
         # Set plot labels and title
         ax.set_xlabel("FRET Efficiency (%)", fontsize=10)
         ax.set_ylabel("Pixel Percentage (%)", fontsize=10)
-        
+
         # Set title with error type
         title_text = self.agg_hist_title_edit.text() or f"Aggregate Histogram by Group (Error: {error_type})"
         ax.set_title(title_text, fontsize=11)
-        
+
         # Set axis limits
         ax.set_xlim(0, 50)
         ax.set_ylim(0, y_max * 1.2 if y_max > 0 else 1)
-        
+
         # Add grid for better readability
         ax.grid(True, linestyle='--', alpha=0.3)
-        
-        # Create a compact legend in the upper right
-        if len(group_hists) > 1:
-            legend = ax.legend(
-                loc='upper right',
-                bbox_to_anchor=(1.0, 1.0),
-                ncol=1,  # Single column for better space usage
-                frameon=True,
-                framealpha=0.8,
-                fancybox=True,
-                shadow=False,
-                borderpad=0.5,
-                handlelength=1.0,
-                handletextpad=0.5,
-                columnspacing=0.5,
-                fontsize='x-small',
-                markerscale=0.8,
-                labelspacing=0.3
-            )
-            
-            # Adjust the legend frame to be more compact
-            frame = legend.get_frame()
-            frame.set_linewidth(0.5)
-            frame.set_facecolor('0.9' if self.current_theme == 'light' else '0.2')
-            frame.set_edgecolor('0.5')
-        
-        # Adjust layout to make room for legend below
-        new_fig.tight_layout(rect=[0, 0.05, 1, 0.95])  # Leave space at bottom for legend
-        
-        # Add export button
+
+        new_fig.tight_layout()
+
+        # Buttons: Legend (separate window), Export Data (CSV), Save Plot (300 DPI).
         btn_export = QPushButton("Export Data")
         btn_export.clicked.connect(self.export_aggregate_histogram_data)
-        
+        btn_legend = QPushButton("Legend")
+        btn_legend.setToolTip("Show the group legend (with pixel-weighted means) in its own savable window")
+        btn_legend.clicked.connect(lambda: self._open_legend_popout(legend_entries, "Histogram Legend"))
+        btn_save = QPushButton("Save Plot")
+        btn_save.setToolTip("Save the plot as a high-resolution (300 DPI) image")
+        btn_save.clicked.connect(lambda: self.save_plot(new_fig, "aggregate_histogram"))
+
+        btn_row = QHBoxLayout()
+        btn_row.addWidget(btn_legend)
+        btn_row.addWidget(btn_export)
+        btn_row.addWidget(btn_save)
+        btn_row.addStretch()
+
         # Set up the rest of the UI
         toolbar = NavigationToolbar(canvas, dlg)
+        theme_system.style_toolbar(toolbar, theme_system.current_theme_name())
         container_layout.addWidget(toolbar)
         container_layout.addWidget(canvas)
-        container_layout.addWidget(btn_export)
+        container_layout.addLayout(btn_row)
         scroll.setWidget(container)
         layout.addWidget(scroll)
         
@@ -1075,42 +1042,32 @@ class FretTab(QWidget):
         title_text = self.agg_box_title_edit.text() or f"Per-cell Averages by Group ({selected_formula})\n(Threshold: {self.lower_threshold_spinbox.value()}-{self.upper_threshold_spinbox.value()}%)"
         ax.set_title(title_text)
         
-        # Create a more compact legend with just the group names and colors
-        legend_handles = []
-        legend_labels = []
+        # Collect legend entries for a separate, savable Legend window instead of
+        # drawing a legend on the plot (which crowds the axes with many groups).
+        legend_entries = []
         for (i, group, mean_val, n_points, compactness), color in zip(group_stats, box_colors):
-            legend_handles.append(plt.Rectangle((0, 0), 0.8, 0.8, fc=color, ec='black', linewidth=0.5, alpha=0.5))
-            legend_labels.append(f'{group}: {mean_val:.1f}% (n={n_points}, C={compactness:.1f})')
-        
-        # Add legend above the plot
-        legend = ax.legend(legend_handles, legend_labels, 
-                         loc='upper left',
-                         bbox_to_anchor=((1.05, 1)),  # Above the plot
-                         ncol=min(2, len(legend_labels)),  # Maximum 2 columns
-                         frameon=True,
-                         framealpha=0.9,
-                         fancybox=True,
-                         shadow=True,
-                         borderpad=0.5,
-                         handlelength=1.2,
-                         handletextpad=0.3,
-                         columnspacing=0.8,
-                         fontsize='small')
-        
-        # Adjust layout to make room for legend above
-        new_fig.tight_layout(rect=[0, 0, 1, 0.95])  # Leave space at top for legend
-        
+            legend_entries.append(
+                (color, f'{group}: {mean_val:.1f}% (n={n_points}, C={compactness:.1f})'))
+
+        new_fig.tight_layout()
+
         # Set up the rest of the UI
         toolbar = NavigationToolbar(canvas, dlg)
-        
+        theme_system.style_toolbar(toolbar, theme_system.current_theme_name())
+
         # Create a horizontal layout for toolbar and save button
         toolbar_layout = QHBoxLayout()
         toolbar_layout.addWidget(toolbar)
-        
+
+        # Legend (separate savable window).
+        legend_btn = QPushButton("Legend")
+        legend_btn.setToolTip("Show the group legend in its own savable window")
+        legend_btn.clicked.connect(lambda: self._open_legend_popout(legend_entries, "Box Plot Legend"))
+        toolbar_layout.addWidget(legend_btn)
+
         # Add save button
         save_btn = QPushButton("Save Plot")
-        save_btn.setToolTip("Save the current plot to a file")
-        save_btn.setIcon(QIcon(resource_path("icons/save.png")))  # Using the same save icon as the main UI
+        save_btn.setToolTip("Save the plot as a high-resolution (300 DPI) image")
         save_btn.clicked.connect(lambda: self.save_plot(new_fig, "aggregate_boxplot"))
         toolbar_layout.addWidget(save_btn)
 
@@ -1305,7 +1262,7 @@ class FretTab(QWidget):
                                         artists_to_add.append((patch, artist.get_zorder()))
                     
                     except Exception as e:
-                        print(f"Could not copy artist {artist.__class__.__name__}: {e}")
+                        dprint(f"Could not copy artist {artist.__class__.__name__}: {e}")
                         import traceback
                         traceback.print_exc()
                 
@@ -1336,12 +1293,13 @@ class FretTab(QWidget):
                 new_ax.set_yscale(ax.get_yscale())
                 
             except Exception as e:
-                print(f"Error copying axes: {e}")
+                dprint(f"Error copying axes: {e}")
                 import traceback
                 traceback.print_exc()
         
         # Add toolbar
         toolbar = NavigationToolbar(canvas, dlg)
+        theme_system.style_toolbar(toolbar, theme_system.current_theme_name())
         
         # Add widgets to layout
         container_layout.addWidget(toolbar)
@@ -1384,33 +1342,10 @@ class FretTab(QWidget):
         scroll_settings.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll_settings.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         
-        # Set a style sheet for the scroll area to ensure scrollbars are visible in dark mode
+        # Keep the scroll area itself borderless/transparent; scrollbars are
+        # styled centrally by the application theme (GUI/theme.py).
         scroll_settings.setStyleSheet("""
-            QScrollArea {
-                border: none;
-                background: transparent;
-            }
-            QScrollBar:horizontal, QScrollBar:vertical {
-                background: #2d2d2d;
-                height: 12px;
-                width: 12px;
-                margin: 0px;
-                border: none;
-            }
-            QScrollBar::handle:horizontal, QScrollBar::handle:vertical {
-                background: #606060;
-                min-width: 20px;
-                min-height: 20px;
-                border-radius: 6px;
-            }
-            QScrollBar::handle:horizontal:hover, QScrollBar::handle:vertical:hover {
-                background: #707070;
-            }
-            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal,
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-                width: 0px;
-                height: 0px;
-            }
+            QScrollArea { border: none; background: transparent; }
         """)
 
         group_assign_layout = QHBoxLayout()
@@ -1420,6 +1355,7 @@ class FretTab(QWidget):
         group_assign_layout.addWidget(self.group_edit)
         assign_btn = QPushButton("Apply to Selected")
         assign_btn.clicked.connect(self.assign_group_to_selected)
+        ui_widgets.set_button_icon(assign_btn, "check")
         group_assign_layout.addWidget(assign_btn)
         left_layout.addLayout(group_assign_layout)
 
@@ -1431,16 +1367,29 @@ class FretTab(QWidget):
         self.image_list_widget.currentRowChanged.connect(self.update_plot_display)
         self.image_list_widget.currentRowChanged.connect(self.update_histogram_plot)
         self.image_list_widget.currentRowChanged.connect(self.update_current_boxplot)
-        add_button = QPushButton("Add Images")
+        # Icon-only, so the row never truncates in the narrow settings panel.
+        add_button = QPushButton("Add")
+        add_button.setToolTip("Add images to the FRET analysis list")
         add_button.clicked.connect(self.add_images)
-        remove_button = QPushButton("Remove Selected")
+        ui_widgets.set_button_icon(add_button, "folder")
+        remove_button = QPushButton()
+        remove_button.setToolTip("Remove the selected images from the list")
         remove_button.clicked.connect(self.remove_image)
-        reset_button = QPushButton("Reset Tab")
+        ui_widgets.set_button_icon(remove_button, "trash")
+        reset_button = QPushButton()
+        reset_button.setToolTip("Reset the FRET Analysis tab")
         reset_button.clicked.connect(self.reset_tab)
+        ui_widgets.set_button_icon(reset_button, "refresh")
+        metadata_button = QPushButton()
+        metadata_button.setToolTip("View the metadata / tags of the selected image")
+        metadata_button.clicked.connect(self.view_metadata)
+        ui_widgets.set_button_icon(metadata_button, "info")
         image_buttons_layout = QHBoxLayout()
         image_buttons_layout.addWidget(add_button)
         image_buttons_layout.addWidget(remove_button)
         image_buttons_layout.addWidget(reset_button)
+        image_buttons_layout.addWidget(metadata_button)
+        image_buttons_layout.addStretch()
         image_layout.addWidget(self.image_list_widget)
         image_layout.addLayout(image_buttons_layout)
         self.image_group.setLayout(image_layout)
@@ -1523,7 +1472,11 @@ class FretTab(QWidget):
 
         # Donor/Acceptor Ratio Threshold
         self.ratio_threshold_spinbox = QSpinBox()
-        self.ratio_threshold_spinbox.setRange(1, 1000)
+        # 0 disables the donor/acceptor ratio filtering entirely. (A value of 1
+        # would keep only pixels with ratio exactly 1, which is almost never what
+        # the user wants, so allowing 0 gives a clean "off" instead.)
+        self.ratio_threshold_spinbox.setRange(0, 1000)
+        self.ratio_threshold_spinbox.setSpecialValueText("Disabled")  # shown when value == 0
         default_ratio = 100 if self.config is None else int(self.config.get('fret.donor_acceptor_ratio_threshold', 100))
         self.ratio_threshold_spinbox.setValue(default_ratio)
         if self.config:
@@ -1532,7 +1485,7 @@ class FretTab(QWidget):
             fret_settings_layout,
             "D/A Ratio Threshold:",
             self.ratio_threshold_spinbox,
-            "Pixels with donor/acceptor mean ratio greater than this value or less than its reciprocal will be excluded."
+            "Pixels with donor/acceptor mean ratio greater than this value or less than its reciprocal will be excluded. Set to 0 (Disabled) to turn the ratio filter off."
         )
         # Label to show number of excluded cells for current image
         self.excluded_cells_ratio_label = QLabel("Excluded Cells: 0")
@@ -1617,8 +1570,10 @@ class FretTab(QWidget):
             self.dfret_c1_label.setText(f"{self.dfret_C1:.6g}")
         self.add_info_icon(dfret_layout, "C1:", self.dfret_c1_label, "Donor normalization factor C1 computed from fusion construct (Eq. 6 in Hochreiter et al.).")
 
-        self.dfret_compute_c1_button = QPushButton("Compute C1 from Selected Image")
+        self.dfret_compute_c1_button = QPushButton("Compute C1")
+        self.dfret_compute_c1_button.setToolTip("Compute the donor normalization factor C1 from the selected image")
         self.dfret_compute_c1_button.clicked.connect(self.compute_dfret_c1_from_selected_image)
+        ui_widgets.set_button_icon(self.dfret_compute_c1_button, "check")
         dfret_layout.addRow(self.dfret_compute_c1_button)
 
         self.dfret_group.setLayout(dfret_layout)
@@ -1641,8 +1596,10 @@ class FretTab(QWidget):
         analysis_layout.addWidget(info_save_label)
         self.run_button = QPushButton("Run FRET Analysis")
         self.run_button.setEnabled(False)
+        self.run_button.setObjectName("primaryButton")
         self.run_button.setToolTip("Complete bleedthrough parameter calibration first")
         self.run_button.clicked.connect(self.run_analysis)
+        ui_widgets.set_button_icon(self.run_button, "play", on_accent=True)
         analysis_layout.addWidget(self.run_button)
         self.analysis_group.setLayout(analysis_layout)
         left_layout.addWidget(self.analysis_group)
@@ -1983,17 +1940,12 @@ class FretTab(QWidget):
         
         pop_agg_hist = QToolButton()
         pop_agg_hist.setText("↗")
-        pop_agg_hist.setToolTip("Pop-out histogram")
+        pop_agg_hist.setToolTip("Pop-out histogram (save at publication quality from the pop-out)")
         pop_agg_hist.clicked.connect(lambda: self._open_histogram_popout(self.agg_hist_figure, "Aggregate Histogram"))
-        
-        save_hist = QToolButton()
-        save_hist.setText("Save 💾")
-        save_hist.setToolTip("Save histogram as high-res image")
-        save_hist.clicked.connect(lambda: self.save_plot(self.agg_hist_figure, "histogram"))
-        
+
+        # Saving happens in the pop-out (300 DPI) so no main-UI Save button here.
         hist_header = QHBoxLayout()
         hist_header.addStretch()
-        hist_header.addWidget(save_hist)
         hist_header.addWidget(pop_agg_hist)
         
         agg_content_layout.addLayout(hist_header)
@@ -2010,23 +1962,20 @@ class FretTab(QWidget):
         
         pop_agg_box = QToolButton()
         pop_agg_box.setText("↗")
-        pop_agg_box.setToolTip("Pop-out box plot")
-        pop_agg_box.clicked.connect(lambda: self.open_popout(self.agg_box_figure, "Aggregate Box Plot"))
-        
-        save_box = QToolButton()
-        save_box.setText("Save 💾")
-        save_box.setToolTip("Save box plot as high-res image")
-        save_box.clicked.connect(lambda: self.save_plot(self.agg_box_figure, "boxplot"))
+        pop_agg_box.setToolTip("Pop-out box plot (save at publication quality from the pop-out)")
+        # Use the data-recreate box-plot pop-out so the legend can be decoupled into
+        # its own savable window.
+        pop_agg_box.clicked.connect(lambda: self._open_boxplot_popout(self.agg_box_figure, "Aggregate Box Plot"))
 
         stats_box = QToolButton()
         stats_box.setText("Stats ℹ")
         stats_box.setToolTip("Show the statistical tests and data characteristics for this plot")
         stats_box.clicked.connect(self._show_stats_report_dialog)
 
+        # Saving happens in the pop-out (300 DPI) so no main-UI Save button here.
         box_header = QHBoxLayout()
         box_header.addStretch()
         box_header.addWidget(stats_box)
-        box_header.addWidget(save_box)
         box_header.addWidget(pop_agg_box)
         
         agg_content_layout.addLayout(box_header)
@@ -2174,12 +2123,18 @@ class FretTab(QWidget):
         self.canvas.setEnabled(True)
         if not enabled:
             self.figure.clear()
-            self.canvas.draw()
+            self.canvas.draw_idle()
 
     def add_images(self):
         files, _ = QFileDialog.getOpenFileNames(self, "Select Images", "", "Image Files (*.tif *.czi)")
         if files:
             self.add_image_paths(files)
+
+    def view_metadata(self):
+        """Show the metadata dialog for the currently selected image."""
+        row = self.image_list_widget.currentRow()
+        path = self.image_paths[row] if 0 <= row < len(self.image_paths) else None
+        ui_widgets.show_metadata_dialog(self, path)
 
     def _update_rep_group_combo(self):
         """Update the representative images group combo box with current groups."""
@@ -2304,7 +2259,7 @@ class FretTab(QWidget):
         self.figure.clear()
         self.current_stats_table.setRowCount(0)
         self.aggregate_stats_table.setRowCount(0)
-        self.canvas.draw()
+        self.canvas.draw_idle()
 
     def set_correction_parameters(self, donor_model, donor_coeffs, acceptor_model, acceptor_coeffs,
                                   s3_model=None, s3_coeffs=None, s4_model=None, s4_coeffs=None, s3_s4_enabled=False):
@@ -2465,9 +2420,12 @@ class FretTab(QWidget):
                             cell_mask = (labels == lbl)
                             if not np.any(final_mask[cell_mask]):
                                 excluded_labels.add(lbl)
-                    else:
-                        final_mask = label_mask
-                        
+                    # NOTE: no 'else' reset here. When the ratio threshold is 0
+                    # (Disabled) we simply skip ratio filtering and keep the mask
+                    # built above (label_mask, optionally AND-ed with the PixFRET
+                    # mask). An else that reset final_mask to label_mask would have
+                    # silently dropped the PixFRET mask.
+
                     # Cell efficiency threshold filtering
                     if self.cell_eff_threshold_checkbox.isChecked():
                         cell_lower = self.cell_eff_lower_spinbox.value()
@@ -2517,12 +2475,14 @@ class FretTab(QWidget):
 
                         efficiencies[formula_name] = eff_map
                     
-                    # Store channel data with consistent keys
-                    efficiencies["_labels"] = labels.astype(int)
+                    # Store label map + excluded count. int32 holds cell label IDs
+                    # with room to spare and halves the label-map memory vs int64.
+                    # The raw FRET/Donor/Acceptor channels are intentionally NOT
+                    # cached here: the Representative-Images view reloads them from
+                    # disk on demand (see _load_raw_channel), which matches the
+                    # exported frames and keeps analysis_results small.
+                    efficiencies["_labels"] = labels.astype(np.int32)
                     efficiencies["_excluded_count"] = len(excluded_labels)
-                    efficiencies["f"] = fret  # FRET channel
-                    efficiencies["d"] = donor  # Donor channel
-                    efficiencies["a"] = acceptor  # Acceptor channel
                     
                     # Store all results
                     self.analysis_results[file_path] = efficiencies
@@ -2581,12 +2541,16 @@ class FretTab(QWidget):
             image_data = czi_file.asarray().squeeze()
             if image_data.ndim != 3 or image_data.shape[0] < 4:
                 raise ValueError("CZI file must contain at least 4 channels (Labels, FRET, Donor, Acceptor).")
-            labels, fret_channel, donor_channel, acceptor_channel = [image_data[i].astype(float) for i in range(4)]
+            # float32 is exact for 16-bit intensities and halves the per-image
+            # memory held in analysis_results vs float64.
+            labels, fret_channel, donor_channel, acceptor_channel = [image_data[i].astype(np.float32) for i in range(4)]
         elif file_path.lower().endswith(('.tif', '.tiff')):
             image_data = tifffile.imread(file_path)
             if image_data.ndim != 3 or image_data.shape[0] < 4:
                 raise ValueError("TIFF file must have at least 4 frames (Labels, FRET, Donor, Acceptor).")
-            labels, fret_channel, donor_channel, acceptor_channel = [image_data[i].astype(float) for i in range(4)]
+            # float32 is exact for 16-bit intensities and halves the per-image
+            # memory held in analysis_results vs float64.
+            labels, fret_channel, donor_channel, acceptor_channel = [image_data[i].astype(np.float32) for i in range(4)]
         else:
             QMessageBox.warning(self, "Unsupported Format", f"Unsupported file format: {os.path.basename(file_path)}.")
             return None, None, None, None, None, None
@@ -2650,28 +2614,31 @@ class FretTab(QWidget):
         return bg_sub, min_mean
 
     def calculate_fret_efficiency(self, f, d, a, formula_name):
-        f, d, a = f.astype(float), d.astype(float), a.astype(float)
-        efficiency = np.zeros_like(f, dtype=float)
+        # Compute in float32: efficiencies are small percentages, float32 keeps
+        # ~7 significant digits (ample) and halves the stored map memory.
+        dtype = np.float32
+        f, d, a = f.astype(dtype), d.astype(dtype), a.astype(dtype)
+        efficiency = np.zeros_like(f, dtype=dtype)
         with np.errstate(divide='ignore', invalid='ignore'):
             if formula_name == "FRET/Donor":
-                efficiency = np.divide(f, d, out=np.zeros_like(f, dtype=float), where=d!=0)
+                efficiency = np.divide(f, d, out=np.zeros_like(f, dtype=dtype), where=d!=0)
             elif formula_name == "FRET/Acceptor":
-                efficiency = np.divide(f, a, out=np.zeros_like(f, dtype=float), where=a!=0)
+                efficiency = np.divide(f, a, out=np.zeros_like(f, dtype=dtype), where=a!=0)
             elif formula_name == "Xia":
                 denominator = np.sqrt(d * a)
-                efficiency = np.divide(f, denominator, out=np.zeros_like(f, dtype=float), where=denominator!=0)
+                efficiency = np.divide(f, denominator, out=np.zeros_like(f, dtype=dtype), where=denominator!=0)
             elif formula_name == "Gordon":
                 denominator = d * a
-                efficiency = np.divide(f, denominator, out=np.zeros_like(f, dtype=float), where=denominator!=0)
+                efficiency = np.divide(f, denominator, out=np.zeros_like(f, dtype=dtype), where=denominator!=0)
             elif formula_name == "PixFRET":
                 denominator = d + f
-                efficiency = np.divide(f, denominator, out=np.zeros_like(f, dtype=float), where=denominator!=0)
+                efficiency = np.divide(f, denominator, out=np.zeros_like(f, dtype=dtype), where=denominator!=0)
             elif formula_name == "DFRET":
                 if self.dfret_C1 is None or not np.isfinite(self.dfret_C1) or self.dfret_C1 <= 0:
-                    efficiency = np.zeros_like(f, dtype=float)
+                    efficiency = np.zeros_like(f, dtype=dtype)
                 else:
                     denom = (self.dfret_C1 * d) + f
-                    efficiency = np.divide(f, denom, out=np.zeros_like(f, dtype=float), where=denom!=0)
+                    efficiency = np.divide(f, denom, out=np.zeros_like(f, dtype=dtype), where=denom!=0)
         return efficiency * 100
 
     def compute_dfret_c1_from_image(self, file_path):
@@ -2760,107 +2727,6 @@ class FretTab(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Export Error", f"Failed to export histogram data:\n{str(e)}")
 
-    def load_ramps_colormap(self):
-        try:
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            lut_path = os.path.join(script_dir, 'lut_files/5_ramps.lut')
-            if not os.path.exists(lut_path):
-                lut_path = resource_path('lut_files/5_ramps.lut')
-            if not os.path.exists(lut_path):
-                print(f"Warning: 5_ramps.lut not found at {lut_path}, using 'jet' colormap")
-                return plt.get_cmap('jet')
-            lut = np.loadtxt(lut_path)
-            if np.max(lut) > 1.0:
-                lut = lut / 255.0
-            if len(lut.shape) != 2 or lut.shape[1] != 3:
-                print(f"Warning: Invalid LUT format in {lut_path}, using 'jet' colormap")
-                return plt.get_cmap('jet')
-            if lut.shape[0] < 256:
-                lut = np.vstack([lut, np.tile(lut[-1], (256 - lut.shape[0], 1))])
-            elif lut.shape[0] > 256:
-                lut = lut[:256]
-            return ListedColormap(lut, name='5_ramps')
-        except Exception as e:
-            print(f"Error loading colormap: {str(e)}")
-            return plt.get_cmap('jet')
-
-    def _load_lut_file(self, filename):
-        """Helper method to load a LUT file with error handling."""
-        try:
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            lut_path = os.path.join(script_dir, filename)
-            if not os.path.exists(lut_path):
-                lut_path = resource_path(filename)
-            if not os.path.exists(lut_path):
-                print(f"Warning: {filename} not found at {lut_path}")
-                return None
-                
-            # Load the LUT file, skipping empty lines and stripping whitespace
-            with open(lut_path, 'r') as f:
-                lines = [line.strip() for line in f if line.strip()]
-            
-            # Parse the LUT values
-            lut = []
-            for line in lines:
-                # Skip comment lines
-                if line.startswith('#'):
-                    continue
-                # Split on whitespace and convert to float
-                values = [float(x) for x in line.split()]
-                if len(values) >= 3:  # Need at least R,G,B values
-                    lut.append(values[:3])
-            
-            if not lut:
-                print(f"Warning: No valid data in {filename}")
-                return None
-                
-            lut = np.array(lut)
-            
-            # Normalize to [0,1] range if needed
-            if np.max(lut) > 1.0:
-                lut = lut / 255.0
-                
-            # Ensure proper shape (N,3)
-            if len(lut.shape) != 2 or lut.shape[1] != 3:
-                print(f"Warning: Invalid LUT format in {filename}")
-                return None
-                
-            # Ensure exactly 256 colors by repeating the last color or truncating
-            if lut.shape[0] < 256:
-                lut = np.vstack([lut, np.tile(lut[-1], (256 - lut.shape[0], 1))])
-            elif lut.shape[0] > 256:
-                lut = lut[:256]
-                
-            return lut
-            
-        except Exception as e:
-            print(f"Error loading {filename}: {e}")
-            return None
-            
-    def load_orange_colormap(self):
-        """Load the Orange.lut colormap."""
-        lut = self._load_lut_file('lut_files/Orange.lut')
-        if lut is not None:
-            return ListedColormap(lut, name='orange_custom')
-        print("Using 'Oranges' colormap as fallback")
-        return plt.get_cmap('Oranges')
-        
-    def load_green_colormap(self):
-        """Load the Green.lut colormap."""
-        lut = self._load_lut_file('lut_files/Green.lut')
-        if lut is not None:
-            return ListedColormap(lut, name='green_custom')
-        print("Using 'Greens' colormap as fallback")
-        return plt.get_cmap('Greens')
-        
-    def load_red_colormap(self):
-        """Load the Red.lut colormap."""
-        lut = self._load_lut_file('lut_files/Red.lut')
-        if lut is not None:
-            return ListedColormap(lut, name='red_custom')
-        print("Using 'Reds' colormap as fallback")
-        return plt.get_cmap('Reds')
-
     def save_results(self, original_path, efficiencies):
         try:
             base_dir = os.path.dirname(original_path)
@@ -2881,12 +2747,12 @@ class FretTab(QWidget):
                     metadata={'axes': 'YX'},  # Ensure proper dimension order
                     imagej=True  # Add ImageJ metadata for better compatibility
                 )
-                print(f"Saved {formula_name} efficiency map to {output_path}")
-                print(f"  - Shape: {eff_map.shape}, dtype: {eff_map.dtype}")
-                print(f"  - Min: {np.min(eff_map):.4f}, Max: {np.max(eff_map):.4f}, Mean: {np.mean(eff_map):.4f}")
+                dprint(f"Saved {formula_name} efficiency map to {output_path}")
+                dprint(f"  - Shape: {eff_map.shape}, dtype: {eff_map.dtype}")
+                dprint(f"  - Min: {np.min(eff_map):.4f}, Max: {np.max(eff_map):.4f}, Mean: {np.mean(eff_map):.4f}")
         except Exception as e:
             error_msg = f"Failed to save results for {os.path.basename(original_path)}: {e}"
-            print(error_msg)
+            dprint(error_msg)
             QMessageBox.critical(self, "Save Error", error_msg)
 
     def update_histogram_plot(self):
@@ -2900,7 +2766,7 @@ class FretTab(QWidget):
         efficiencies = self.analysis_results[file_path]
         if selected_formula not in efficiencies or "_labels" not in efficiencies:
             self.hist_figure.clear()
-            self.hist_canvas.draw()
+            self.hist_canvas.draw_idle()
             return
         eff_map = efficiencies[selected_formula]
         labels_arr = efficiencies["_labels"]
@@ -2908,7 +2774,7 @@ class FretTab(QWidget):
         label_ids = label_ids[label_ids > 0]
         if label_ids.size == 0:
             self.hist_figure.clear()
-            self.hist_canvas.draw()
+            self.hist_canvas.draw_idle()
             return
         edges = np.linspace(0, 50, 257)
         lower_thr = self.lower_threshold_spinbox.value()
@@ -2939,7 +2805,7 @@ class FretTab(QWidget):
             per_label_hists.append((hist_counts / inliers.size) * 100.0)
         if len(per_label_hists) == 0:
             self.hist_figure.clear()
-            self.hist_canvas.draw()
+            self.hist_canvas.draw_idle()
             return
         hist_matrix = np.vstack(per_label_hists)
         mean_hist = np.mean(hist_matrix, axis=0)
@@ -2983,7 +2849,7 @@ class FretTab(QWidget):
         layout.addWidget(btn_export)
         self.export_btn = btn_export
         self.hist_figure.tight_layout()
-        self.hist_canvas.draw()
+        self.hist_canvas.draw_idle()
 
     def load_ramps_colormap(self):
         try:
@@ -2992,13 +2858,13 @@ class FretTab(QWidget):
             if not os.path.exists(lut_path):
                 lut_path = resource_path('lut_files/5_ramps.lut')
             if not os.path.exists(lut_path):
-                print(f"Warning: 5_ramps.lut not found at {lut_path}, using 'jet' colormap")
+                dprint(f"Warning: 5_ramps.lut not found at {lut_path}, using 'jet' colormap")
                 return plt.get_cmap('jet')
             lut = np.loadtxt(lut_path)
             if np.max(lut) > 1.0:
                 lut = lut / 255.0
             if len(lut.shape) != 2 or lut.shape[1] != 3:
-                print(f"Warning: Invalid LUT format in {lut_path}, using 'jet' colormap")
+                dprint(f"Warning: Invalid LUT format in {lut_path}, using 'jet' colormap")
                 return plt.get_cmap('jet')
             if lut.shape[0] < 256:
                 lut = np.vstack([lut, np.tile(lut[-1], (256 - lut.shape[0], 1))])
@@ -3006,7 +2872,7 @@ class FretTab(QWidget):
                 lut = lut[:256]
             return ListedColormap(lut, name='5_ramps')
         except Exception as e:
-            print(f"Error loading colormap: {str(e)}")
+            dprint(f"Error loading colormap: {str(e)}")
             return plt.get_cmap('jet')
 
     def _load_lut_file(self, filename):
@@ -3017,7 +2883,7 @@ class FretTab(QWidget):
             if not os.path.exists(lut_path):
                 lut_path = resource_path(filename)
             if not os.path.exists(lut_path):
-                print(f"Warning: {filename} not found at {lut_path}")
+                dprint(f"Warning: {filename} not found at {lut_path}")
                 return None
                 
             # Load the LUT file, skipping empty lines and stripping whitespace
@@ -3036,7 +2902,7 @@ class FretTab(QWidget):
                     lut.append(values[:3])
             
             if not lut:
-                print(f"Warning: No valid data in {filename}")
+                dprint(f"Warning: No valid data in {filename}")
                 return None
                 
             lut = np.array(lut)
@@ -3047,7 +2913,7 @@ class FretTab(QWidget):
                 
             # Ensure proper shape (N,3)
             if len(lut.shape) != 2 or lut.shape[1] != 3:
-                print(f"Warning: Invalid LUT format in {filename}")
+                dprint(f"Warning: Invalid LUT format in {filename}")
                 return None
                 
             # Ensure exactly 256 colors by repeating the last color or truncating
@@ -3059,7 +2925,7 @@ class FretTab(QWidget):
             return lut
             
         except Exception as e:
-            print(f"Error loading {filename}: {e}")
+            dprint(f"Error loading {filename}: {e}")
             return None
             
     def load_orange_colormap(self):
@@ -3067,7 +2933,7 @@ class FretTab(QWidget):
         lut = self._load_lut_file('lut_files/Orange.lut')
         if lut is not None:
             return ListedColormap(lut, name='orange_custom')
-        print("Using 'Oranges' colormap as fallback")
+        dprint("Using 'Oranges' colormap as fallback")
         return plt.get_cmap('Oranges')
         
     def load_green_colormap(self):
@@ -3075,7 +2941,7 @@ class FretTab(QWidget):
         lut = self._load_lut_file('lut_files/Green.lut')
         if lut is not None:
             return ListedColormap(lut, name='green_custom')
-        print("Using 'Greens' colormap as fallback")
+        dprint("Using 'Greens' colormap as fallback")
         return plt.get_cmap('Greens')
         
     def load_red_colormap(self):
@@ -3083,28 +2949,28 @@ class FretTab(QWidget):
         lut = self._load_lut_file('lut_files/Red.lut')
         if lut is not None:
             return ListedColormap(lut, name='red_custom')
-        print("Using 'Reds' colormap as fallback")
+        dprint("Using 'Reds' colormap as fallback")
         return plt.get_cmap('Reds')
 
     def update_current_boxplot(self):
         current_item = self.image_list_widget.currentItem()
         if not current_item or not self.analysis_results:
             self.box_figure.clear()
-            self.box_canvas.draw()
+            self.box_canvas.draw_idle()
             return
         lower_thr = self.lower_threshold_spinbox.value()
         upper_thr = self.upper_threshold_spinbox.value()
         file_path = self.image_paths[self.image_list_widget.row(current_item)]
         if file_path not in self.analysis_results:
             self.box_figure.clear()
-            self.box_canvas.draw()
+            self.box_canvas.draw_idle()
             return
         selected_formula = self.hist_formula_combo.currentText()
         eff_map = self.analysis_results[file_path].get(selected_formula)
         labels_arr = self.analysis_results[file_path].get("_labels")
         if eff_map is None or labels_arr is None:
             self.box_figure.clear()
-            self.box_canvas.draw()
+            self.box_canvas.draw_idle()
             return
         avg_vals = []
         for lbl in np.unique(labels_arr)[1:]:
@@ -3114,7 +2980,7 @@ class FretTab(QWidget):
                 avg_vals.append(np.mean(vals))
         if not avg_vals:
             self.box_figure.clear()
-            self.box_canvas.draw()
+            self.box_canvas.draw_idle()
             return
             
         # Calculate whisker positions to identify outliers
@@ -3193,7 +3059,7 @@ class FretTab(QWidget):
             text.set_ha('left')
             text.set_position((8, 0))
         self.box_figure.tight_layout()
-        self.box_canvas.draw()
+        self.box_canvas.draw_idle()
         
     def _open_current_image_boxplot_popout(self, figure, title):
         # Create a new figure for the popout
@@ -3321,6 +3187,7 @@ class FretTab(QWidget):
         
         # Add navigation toolbar
         toolbar = NavigationToolbar(canvas, dlg)
+        theme_system.style_toolbar(toolbar, theme_system.current_theme_name())
         container_layout.addWidget(toolbar)
         
         # Add a button to save the figure
@@ -3354,7 +3221,7 @@ class FretTab(QWidget):
         selected_formula = self.aggregate_formula_combo.currentText()
         if not selected_formula or not self.analysis_results:
             self.agg_box_figure.clear()
-            self.agg_box_canvas.draw()
+            self.agg_box_canvas.draw_idle()
             return
         from collections import defaultdict
         group_data = defaultdict(list)
@@ -3379,7 +3246,7 @@ class FretTab(QWidget):
                 group_data[gname].extend(per_cell_avgs)
         if not group_data:
             self.agg_box_figure.clear()
-            self.agg_box_canvas.draw()
+            self.agg_box_canvas.draw_idle()
             return
         labels_sorted = sorted(group_data.keys())
         box_data = [group_data[g] for g in labels_sorted]
@@ -3485,7 +3352,7 @@ class FretTab(QWidget):
         
         # Match the current image boxplot behavior
         self.agg_box_figure.tight_layout()
-        self.agg_box_canvas.draw()
+        self.agg_box_canvas.draw_idle()
         # Ensure the figure takes up all available space
         self.agg_box_figure.set_size_inches(
             self.agg_box_canvas.width() / self.agg_box_figure.dpi,
@@ -3493,7 +3360,7 @@ class FretTab(QWidget):
             forward=True
         )
         self.agg_box_figure.tight_layout()
-        self.agg_box_canvas.draw()
+        self.agg_box_canvas.draw_idle()
 
     def export_aggregate_histogram_data(self):
         if not hasattr(self, 'last_histogram_data') or not self.last_histogram_data:
@@ -3539,7 +3406,7 @@ class FretTab(QWidget):
         selected_formula = self.aggregate_formula_combo.currentText()
         if not selected_formula or not self.analysis_results:
             self.agg_hist_figure.clear()
-            self.agg_hist_canvas.draw()
+            self.agg_hist_canvas.draw_idle()
             return
         edges = np.linspace(0, 50, 257)
         lower_thr = self.lower_threshold_spinbox.value()
@@ -3575,7 +3442,7 @@ class FretTab(QWidget):
                 per_cell_hists.append((counts / inliers.size) * 100)
         if len(per_cell_hists) == 0:
             self.agg_hist_figure.clear()
-            self.agg_hist_canvas.draw()
+            self.agg_hist_canvas.draw_idle()
             return
         hist_matrix = np.vstack(per_cell_hists)
         mean_hist = np.mean(hist_matrix, axis=0)
@@ -3633,7 +3500,7 @@ class FretTab(QWidget):
             layout.addWidget(btn_export)
             self.agg_export_btn = btn_export
         self.agg_hist_figure.tight_layout()
-        self.agg_hist_canvas.draw()
+        self.agg_hist_canvas.draw_idle()
 
     def update_aggregate_stats_table(self, *_):
         selected_formula = self.aggregate_formula_combo.currentText()
@@ -3697,6 +3564,33 @@ class FretTab(QWidget):
         # Don't update representative images automatically - wait for button click
         # self.update_representative_images()  # Removed automatic update
 
+    def _load_raw_channel(self, image_path, frame_type):
+        """Load a single raw channel frame from disk (float32) or return None.
+
+        Uses the canonical frame order [labels, FRET, Donor, Acceptor]. Shared by
+        the representative-image display and the frame export so both show the
+        same raw data.
+        """
+        frame_index = {'fret': 1, 'donor': 2, 'acceptor': 3}.get(frame_type)
+        if frame_index is None:
+            return None
+        try:
+            if image_path.lower().endswith(('.tif', '.tiff')):
+                raw = tifffile.imread(image_path).squeeze()
+            elif image_path.lower().endswith('.czi'):
+                with czi.CziFile(image_path) as czi_file:
+                    raw = czi_file.asarray().squeeze()
+            else:
+                dprint(f"Unsupported file format for channel loading: {image_path}")
+                return None
+            if raw.ndim >= 3 and raw.shape[0] > frame_index:
+                return raw[frame_index].astype(np.float32)
+            dprint(f"Could not extract {frame_type} channel from shape {raw.shape}")
+            return None
+        except Exception as e:
+            dprint(f"Error loading {frame_type} channel from {image_path}: {e}")
+            return None
+
     def get_representative_image(self, group_name):
         """
         Find the image in the group that is closest to the group mean for the currently selected formula.
@@ -3705,25 +3599,25 @@ class FretTab(QWidget):
             tuple: (path, formula_used) where path is the path to the representative image
                    and formula_used is the formula that was used to select it
         """
-        print(f"\n=== get_representative_image for group: {group_name} ===")
+        dprint(f"\n=== get_representative_image for group: {group_name} ===")
         
         # Get all images in the specified group
         group_images = [path for path, group in self.image_groups.items() 
                        if group == group_name and path in self.analysis_results]
         
         if not group_images:
-            print(f"No images found in group: {group_name}")
+            dprint(f"No images found in group: {group_name}")
             return None, None
             
-        print(f"Found {len(group_images)} images in group {group_name}")
+        dprint(f"Found {len(group_images)} images in group {group_name}")
         
         # Get the currently selected formula
         selected_formula = self.aggregate_formula_combo.currentText()
-        print(f"Using selected formula: {selected_formula}")
+        dprint(f"Using selected formula: {selected_formula}")
         
         # Validate if the formula has been analyzed
         if not selected_formula:
-            print("No formula selected")
+            dprint("No formula selected")
             return None, None
             
         # Check if any image has been analyzed with this formula
@@ -3736,7 +3630,7 @@ class FretTab(QWidget):
                 break
         
         if not has_analyzed:
-            print(f"No images have been analyzed with formula: {selected_formula}")
+            dprint(f"No images have been analyzed with formula: {selected_formula}")
             return None, None
         
         # Collect valid images and their means for the selected formula
@@ -3761,20 +3655,20 @@ class FretTab(QWidget):
                     formula_data.append((path, img_mean, non_zero_eff))
         
         if not formula_data:
-            print(f"No valid images found for formula: {selected_formula}")
+            dprint(f"No valid images found for formula: {selected_formula}")
             # Fallback to first available image with any data
             for path in group_images:
                 result = self.analysis_results[path]
-                if any(key in result for key in ['efficiencies', 'f', 'd', 'a']):
-                    print(f"Falling back to first available image: {os.path.basename(path)}")
+                if ('_labels' in result or 'efficiencies' in result):
+                    dprint(f"Falling back to first available image: {os.path.basename(path)}")
                     return path, None
-            print("No suitable representative image found in group")
+            dprint("No suitable representative image found in group")
             return None, None
         
         # Calculate overall mean of non-zero values across all images for the selected formula
         all_eff = np.concatenate([data[2] for data in formula_data])
         group_mean = np.mean(all_eff)
-        print(f"Group mean for {selected_formula}: {group_mean:.4f}")
+        dprint(f"Group mean for {selected_formula}: {group_mean:.4f}")
         
         # Find image with mean closest to group mean
         min_diff = float('inf')
@@ -3782,41 +3676,41 @@ class FretTab(QWidget):
         
         for path, img_mean, _ in formula_data:
             diff = abs(img_mean - group_mean)
-            print(f"  {os.path.basename(path)}: mean={img_mean:.4f}, diff={diff:.4f}")
+            dprint(f"  {os.path.basename(path)}: mean={img_mean:.4f}, diff={diff:.4f}")
             if diff < min_diff:
                 min_diff = diff
                 best_img_path = path
         
         if best_img_path:
-            print(f"Selected representative using {selected_formula}: {os.path.basename(best_img_path)} (diff={min_diff:.4f})")
+            dprint(f"Selected representative using {selected_formula}: {os.path.basename(best_img_path)} (diff={min_diff:.4f})")
             return best_img_path, selected_formula
         
         # Fallback: return first valid image we can find
         for path in group_images:
             result = self.analysis_results[path]
-            if any(key in result for key in ['efficiencies', 'f', 'd', 'a']):
-                print(f"Falling back to first available image: {os.path.basename(path)}")
+            if ('_labels' in result or 'efficiencies' in result):
+                dprint(f"Falling back to first available image: {os.path.basename(path)}")
                 return path, None
         
-        print("No suitable representative image found in group")
+        dprint("No suitable representative image found in group")
         return None, None
 
     def update_representative_images(self):
         """Update the display of representative images for the selected group."""
-        print("\n=== update_representative_images called ===")
+        dprint("\n=== update_representative_images called ===")
         
         # Get the selected group from the combo box
         selected_group = self.rep_group_combo.currentText()
         if not selected_group or selected_group == "Select a group":
             return
             
-        print(f"Updating representative images for group: {selected_group}")
+        dprint(f"Updating representative images for group: {selected_group}")
         
         # Get the representative image for this group
         rep_image_path, formula_used = self.get_representative_image(selected_group)
         
         if not rep_image_path:
-            print(f"No valid representative image found for group: {selected_group}")
+            dprint(f"No valid representative image found for group: {selected_group}")
             # Clear all frames
             for frame_type, widgets in self.frame_widgets.items():
                 fig = widgets['figure']
@@ -3839,9 +3733,9 @@ class FretTab(QWidget):
                 widgets['canvas'].draw()
             return
             
-        print(f"Using representative image: {os.path.basename(rep_image_path)}")
+        dprint(f"Using representative image: {os.path.basename(rep_image_path)}")
         if formula_used:
-            print(f"Using formula: {formula_used}")
+            dprint(f"Using formula: {formula_used}")
             
         # Get the analysis results for this image
         result = self.analysis_results[rep_image_path]
@@ -3860,65 +3754,38 @@ class FretTab(QWidget):
             fig.patch.set_facecolor(bg_color)
             ax.set_facecolor(bg_color)
             
-            # Get the image data based on frame type
+            # Get the image data based on frame type.
             img_data = None
             title_suffix = ""
-            
-            # First check if we have the new data structure with raw channels and efficiency maps
-            if 'f' in result and 'd' in result and 'a' in result:
-                channel_map = {
-                    'fret': ('f', 'FRET Channel'),
-                    'donor': ('d', 'Donor Channel'),
-                    'acceptor': ('a', 'Acceptor Channel')
-                }
-                
-                if frame_type in channel_map:
-                    channel_key, channel_name = channel_map[frame_type]
-                    if channel_key in result:
-                        img_data = result[channel_key]
-                        title_suffix = channel_name
-                elif frame_type == 'efficiency':
-                    # For efficiency, first try to use the formula that was used to select this image
-                    if formula_used and formula_used in result:
-                        img_data = result[formula_used]
-                        title_suffix = f"{formula_used} Efficiency"
-                    else:
-                        # Otherwise, find any available efficiency map in the result
-                        for key in result:
-                            if key not in ['_labels', 'f', 'd', 'a', 'channels'] and isinstance(result[key], np.ndarray):
-                                img_data = result[key]
-                                title_suffix = f"{key} Efficiency"
-                                break
-            # Fallback to old data structure for backward compatibility
-            else:
-                if frame_type == 'efficiency':
-                    # Try to get the efficiency map
-                    if formula_used and formula_used in result:
-                        img_data = result[formula_used]
-                        title_suffix = f"{formula_used} Efficiency"
-                    else:
-                        # Fall back to any available efficiency data
-                        for key, value in result.items():
-                            if key not in ['_labels', 'f', 'd', 'a'] and isinstance(value, np.ndarray) and value.size > 1:
-                                img_data = value
-                                title_suffix = f"{key} Efficiency"
-                                break
+
+            if frame_type in ('fret', 'donor', 'acceptor'):
+                # Channels are loaded RAW from disk on demand (matching the
+                # exported frames), not cached, so display == export and no
+                # full-resolution channel arrays are kept in memory.
+                img_data = self._load_raw_channel(rep_image_path, frame_type)
+                title_suffix = {'fret': 'FRET Channel', 'donor': 'Donor Channel',
+                                'acceptor': 'Acceptor Channel'}[frame_type]
+            elif frame_type == 'efficiency':
+                # Prefer the formula used to select this representative image,
+                # else fall back to any available efficiency map.
+                if formula_used and isinstance(result.get(formula_used), np.ndarray):
+                    img_data = result[formula_used]
+                    title_suffix = f"{formula_used} Efficiency"
+                elif isinstance(result.get('efficiencies'), dict):
+                    for key, value in result['efficiencies'].items():
+                        if isinstance(value, np.ndarray) and value.size > 1:
+                            img_data = value
+                            title_suffix = f"{key} Efficiency"
+                            break
                 else:
-                    # For channel data, check the root level
-                    channel_map = {
-                        'fret': 'f',
-                        'donor': 'd',
-                        'acceptor': 'a'
-                    }
-                    
-                    if frame_type in channel_map:
-                        channel_key = channel_map[frame_type]
-                        if channel_key in result and isinstance(result[channel_key], np.ndarray):
-                            img_data = result[channel_key]
-                            title_suffix = channel_name
-            
+                    for key, value in result.items():
+                        if not key.startswith('_') and isinstance(value, np.ndarray) and value.size > 1:
+                            img_data = value
+                            title_suffix = f"{key} Efficiency"
+                            break
+
             if img_data is None or not np.any(img_data > 0):
-                print(f"No valid {frame_type} data found in result: {list(result.keys())}")
+                dprint(f"No valid {frame_type} data found in result: {list(result.keys())}")
                 ax.text(0.5, 0.5, f"No {frame_type} data available", 
                        ha='center', va='center', color=fg_color)
                 ax.axis('off')
@@ -3982,33 +3849,40 @@ class FretTab(QWidget):
                         
                         # Get valid pixel values (non-zero and non-NaN)
                         valid_pixels = img_data[img_data > 0]
-                        
+
                         # Set default values if no valid pixels
                         if len(valid_pixels) == 0:
-                            print(f"Warning: No valid pixels found for {frame_type} frame")
+                            dprint(f"Warning: No valid pixels found for {frame_type} frame")
                             vmin, vmax = 0, 1
                         else:
-                            # Calculate percentiles with robust handling
+                            # Auto-contrast from the percentiles of the *non-zero*
+                            # pixels. Both bounds must come from the same population:
+                            # previously vmax used np.percentile(img_data, 99) over
+                            # ALL pixels, so for a sparse channel (e.g. background-
+                            # subtracted / bleed-through-corrected FRET that is mostly
+                            # zero) the 99th percentile collapsed to ~0 while vmin
+                            # stayed positive. That left vmin > vmax, which makes
+                            # imshow invert the colormap and render cells as their
+                            # complement (the "reversed" look).
                             try:
                                 vmin = float(np.percentile(valid_pixels, 1))
-                                vmax = float(np.percentile(img_data, 99))
+                                vmax = float(np.percentile(valid_pixels, 99))
                             except Exception as e:
-                                print(f"Error calculating percentiles: {e}")
+                                dprint(f"Error calculating percentiles: {e}")
                                 vmin, vmax = 0, np.max(img_data) if np.max(img_data) > 0 else 1
-                        
-                        # Ensure vmin <= vmax
-                        if vmin > vmax:
-                            print(f"Warning: Adjusting vmin/vmax for {frame_type} frame")
-                            if vmax > 0:
-                                vmin = 0
-                            else:
-                                vmax = 1
+
+                        # Guarantee a well-ordered, non-degenerate range so the
+                        # colormap is never inverted or flat.
+                        if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
+                            vmin = 0.0
+                            data_max = float(np.max(valid_pixels)) if len(valid_pixels) else 0.0
+                            vmax = data_max if data_max > 0 else 1.0
                         
                         # Plot with validation
                         im = ax.imshow(img_data, cmap=cmap, vmin=vmin, vmax=vmax)
                         
                     except Exception as e:
-                        print(f"Error in image plotting for {frame_type}: {str(e)}")
+                        dprint(f"Error in image plotting for {frame_type}: {str(e)}")
                         # Fallback to grayscale with default range
                         im = ax.imshow(img_data, cmap='gray', vmin=0, vmax=1)
                         ax.text(0.5, 0.5, 'Error displaying image', 
@@ -4044,7 +3918,7 @@ class FretTab(QWidget):
         # Update the window title with the selected group
         self.setWindowTitle(f"FRET Analysis - {selected_group}")
         
-        print("=== Finished updating representative images ===\n")
+        dprint("=== Finished updating representative images ===\n")
         self.current_representative_image = rep_image_path
 
     def _export_single_frame(self, image_path, frame_type, output_dir):
@@ -4060,7 +3934,7 @@ class FretTab(QWidget):
         """
         try:
             if image_path not in self.analysis_results:
-                print(f"No analysis results found for {os.path.basename(image_path)}")
+                dprint(f"No analysis results found for {os.path.basename(image_path)}")
                 return False
                 
             result = self.analysis_results[image_path]
@@ -4076,25 +3950,25 @@ class FretTab(QWidget):
                         with czi.CziFile(image_path) as czi_file:
                             raw_image = czi_file.asarray().squeeze()
                     else:
-                        print(f"Unsupported file format for direct channel loading: {image_path}")
+                        dprint(f"Unsupported file format for direct channel loading: {image_path}")
                         return False
                     
                     # Extract the appropriate channel (assuming order: Labels, FRET, Donor, Acceptor)
                     if frame_type == 'fret' and raw_image.ndim >= 3 and raw_image.shape[0] >= 2:
                         img_data = raw_image[1]  # FRET is the second channel
-                        print("Loaded FRET channel directly from raw image")
+                        dprint("Loaded FRET channel directly from raw image")
                     elif frame_type == 'donor' and raw_image.ndim >= 3 and raw_image.shape[0] >= 3:
                         img_data = raw_image[2]  # Donor is the third channel
-                        print("Loaded Donor channel directly from raw image")
+                        dprint("Loaded Donor channel directly from raw image")
                     elif frame_type == 'acceptor' and raw_image.ndim >= 3 and raw_image.shape[0] >= 4:
                         img_data = raw_image[3]  # Acceptor is the fourth channel
-                        print("Loaded Acceptor channel directly from raw image")
+                        dprint("Loaded Acceptor channel directly from raw image")
                     else:
-                        print(f"Could not extract {frame_type} channel from raw image with shape {raw_image.shape}")
+                        dprint(f"Could not extract {frame_type} channel from raw image with shape {raw_image.shape}")
                         return False
                         
                 except Exception as e:
-                    print(f"Error loading raw image for {frame_type} channel: {e}")
+                    dprint(f"Error loading raw image for {frame_type} channel: {e}")
                     return False
             elif frame_type == 'efficiency':
                 # Try to get the first available efficiency map
@@ -4102,7 +3976,7 @@ class FretTab(QWidget):
                     # Get the first efficiency map from the 'efficiencies' dict
                     formula_name, eff_map = next(iter(result['efficiencies'].items()))
                     img_data = eff_map
-                    print(f"Found efficiency data in 'efficiencies' dict with key: {formula_name}")
+                    dprint(f"Found efficiency data in 'efficiencies' dict with key: {formula_name}")
                 else:
                     # Look for efficiency data at root level. Skip internal
                     # keys (those starting with '_', e.g. labels and the
@@ -4110,7 +3984,7 @@ class FretTab(QWidget):
                     for key in result:
                         if not key.startswith('_') and key not in ['f', 'd', 'a', 'channels'] and isinstance(result[key], np.ndarray):
                             img_data = result[key]
-                            print(f"Found efficiency data with key: {key}")
+                            dprint(f"Found efficiency data with key: {key}")
                             break
             
             if img_data is not None:
@@ -4144,17 +4018,17 @@ class FretTab(QWidget):
                     imagej=True  # Add ImageJ metadata for better compatibility
                 )
                 
-                print(f"Exported {frame_type} frame to {output_path}")
-                print(f"  - Shape: {img_data.shape}, dtype: {img_data.dtype}")
-                print(f"  - Min: {np.min(img_data):.4f}, Max: {np.max(img_data):.4f}, Mean: {np.mean(img_data):.4f}")
+                dprint(f"Exported {frame_type} frame to {output_path}")
+                dprint(f"  - Shape: {img_data.shape}, dtype: {img_data.dtype}")
+                dprint(f"  - Min: {np.min(img_data):.4f}, Max: {np.max(img_data):.4f}, Mean: {np.mean(img_data):.4f}")
                 
                 return True
                 
-            print(f"Could not find {frame_type} data in analysis results. Available keys: {list(result.keys())}")
+            dprint(f"Could not find {frame_type} data in analysis results. Available keys: {list(result.keys())}")
             return False
                 
         except Exception as e:
-            print(f"Error exporting {frame_type} frame: {str(e)}")
+            dprint(f"Error exporting {frame_type} frame: {str(e)}")
             import traceback
             traceback.print_exc()
             return False
@@ -4350,11 +4224,11 @@ class FretTab(QWidget):
                      where True indicates the selected cell's pixels
         """
         if efficiency_map is None or component_assignments is None:
-            print("Error: efficiency_map or component_assignments is None")
+            dprint("Error: efficiency_map or component_assignments is None")
             return
             
-        print(f"efficiency_map shape: {efficiency_map.shape}")
-        print(f"component_assignments shape: {component_assignments.shape}")
+        dprint(f"efficiency_map shape: {efficiency_map.shape}")
+        dprint(f"component_assignments shape: {component_assignments.shape}")
         
         if cell_mask is None or not isinstance(cell_mask, np.ndarray) or cell_mask.shape != efficiency_map.shape:
             debug_msg = "Invalid cell mask. "
@@ -4365,14 +4239,14 @@ class FretTab(QWidget):
             else:
                 debug_msg += f"Cell mask shape {cell_mask.shape} doesn't match efficiency map shape {efficiency_map.shape}."
             
-            print(debug_msg)
+            dprint(debug_msg)
             QMessageBox.warning(self, "Error", debug_msg)
             return
             
         # Make sure component_assignments has the same length as the number of True values in cell_mask
         n_cell_pixels = np.sum(cell_mask)
         if len(component_assignments) != n_cell_pixels:
-            print(f"Warning: component_assignments length ({len(component_assignments)}) "
+            dprint(f"Warning: component_assignments length ({len(component_assignments)}) "
                   f"doesn't match number of True values in cell_mask ({n_cell_pixels})")
             min_len = min(len(component_assignments), n_cell_pixels)
             component_assignments = component_assignments[:min_len]
@@ -4565,6 +4439,7 @@ class FretTab(QWidget):
         
         # Add navigation toolbar
         toolbar = NavigationToolbar(canvas, self)
+        theme_system.style_toolbar(toolbar, theme_system.current_theme_name())
         
         # Add buttons
         btn_layout = QHBoxLayout()
@@ -4763,7 +4638,7 @@ class FretTab(QWidget):
         if cell_values is None or len(cell_values) == 0 or cell_values.size < 2:
             ax.text(0.5, 0.5, 'Not enough data points for analysis', 
                    ha='center', va='center', transform=ax.transAxes)
-            self.fft_canvas.draw()
+            self.fft_canvas.draw_idle()
             return
             
         # Create the plot in the main tab
@@ -4803,7 +4678,7 @@ class FretTab(QWidget):
         
         # Update the canvas
         self.fft_figure.tight_layout()
-        self.fft_canvas.draw()
+        self.fft_canvas.draw_idle()
     
     def update_cell_histogram(self, cell_values):
         """Update the histogram plot for the given cell values."""
@@ -4828,78 +4703,35 @@ class FretTab(QWidget):
         ax.legend()
         
         # Update the canvas
-        self.cell_hist_canvas.draw()
+        self.cell_hist_canvas.draw_idle()
     
-    def update_plot_display(self, *args):
-        """Update the display when a new image is selected."""
-        # Check if we have a selected image
-        if not self.image_list.currentItem():
-            return
-            
-        current_path = self.image_list.currentItem().text()
-        
-        # Check if we have analysis results for this image
-        if current_path not in self.analysis_results:
-            # Clear the display if no analysis results
-            self.figure.clear()
-            ax = self.figure.add_subplot(111)
-            ax.text(0.5, 0.5, 'Please run analysis first', 
-                   ha='center', va='center', 
-                   color='white' if self.current_theme == 'dark' else 'black')
-            ax.axis('off')
-            self.canvas.draw()
-            return
-            
-        result = self.analysis_results[current_path]
-        
-        # Get the selected formula
-        formula = self.fourier_formula_combo.currentText()
-        if formula in result:
-            self.current_efficiency_map = result[formula]
-        elif 'efficiencies' in result and formula in result['efficiencies']:
-            self.current_efficiency_map = result['efficiencies'][formula]
-        else:
-            self.current_efficiency_map = None
-            
-        # Get cell masks if available
-        self.cell_masks = {}
-        if '_labels' in result:
-            self.cell_masks = {}
-            labels = result['_labels']
-            for cell_id in np.unique(labels):
-                if cell_id > 0:  # Skip background
-                    self.cell_masks[cell_id] = (labels == cell_id)
-        
-        # Update the image display
-        self.update_fourier_image_display()
-        
     def _find_analysis_result(self, path):
         """Find analysis results by matching either full path, just filename, or grouped image."""
         if not path or not self.analysis_results:
-            print(f"No path or analysis results. Path: {path}, Results: {bool(self.analysis_results)}")
+            dprint(f"No path or analysis results. Path: {path}, Results: {bool(self.analysis_results)}")
             return None
             
         # Debug: Print available analysis results
-        print(f"Looking up analysis result for path: {path}")
-        print(f"Available analysis results: {list(self.analysis_results.keys())}")
+        dprint(f"Looking up analysis result for path: {path}")
+        dprint(f"Available analysis results: {list(self.analysis_results.keys())}")
         
         # Try exact match first
         if path in self.analysis_results:
-            print(f"Found exact match for {path}")
+            dprint(f"Found exact match for {path}")
             return self.analysis_results[path]
             
         # Check if this is a grouped image path (contains ' (Group: ')
         if ' (Group: ' in path:
             # Extract the base path before the group info
             base_path = path.split(' (Group: ')[0]
-            print(f"Processing grouped image path. Base path: {base_path}")
+            dprint(f"Processing grouped image path. Base path: {base_path}")
             if base_path in self.analysis_results:
-                print(f"Found match for base path: {base_path}")
+                dprint(f"Found match for base path: {base_path}")
                 return self.analysis_results[base_path]
             
         # Get just the filename part
         filename = os.path.basename(path)
-        print(f"Trying to match by filename: {filename}")
+        dprint(f"Trying to match by filename: {filename}")
         
         if not filename:
             return None
@@ -4907,34 +4739,34 @@ class FretTab(QWidget):
         # Try matching by filename
         for full_path, result in self.analysis_results.items():
             if os.path.basename(full_path) == filename:
-                print(f"Matched by filename: {filename} -> {full_path}")
+                dprint(f"Matched by filename: {filename} -> {full_path}")
                 return result
                 
         # Try matching by path ending
         for full_path, result in self.analysis_results.items():
             if full_path.endswith(path) or path.endswith(full_path):
-                print(f"Matched by path ending: {path} -> {full_path}")
+                dprint(f"Matched by path ending: {path} -> {full_path}")
                 return result
                 
         # Try case-insensitive match
         for full_path, result in self.analysis_results.items():
             if full_path.lower() == path.lower():
-                print(f"Matched case-insensitive: {path} -> {full_path}")
+                dprint(f"Matched case-insensitive: {path} -> {full_path}")
                 return result
                 
         # If we have image groups, try to find a match in the representative images
         if hasattr(self, 'image_groups') and self.image_groups:
-            print("Checking image groups for match...")
+            dprint("Checking image groups for match...")
             for group_name, group_data in self.image_groups.items():
                 if 'representative' in group_data and group_data['representative'] == path:
-                    print(f"Found matching representative in group {group_name}")
+                    dprint(f"Found matching representative in group {group_name}")
                     # Try to find the actual analysis result for this representative
                     for img_path in group_data.get('images', []):
                         if img_path in self.analysis_results:
-                            print(f"Using analysis results from group member: {img_path}")
+                            dprint(f"Using analysis results from group member: {img_path}")
                             return self.analysis_results[img_path]
         
-        print(f"No match found for path: {path}")
+        dprint(f"No match found for path: {path}")
         return None
         
     def update_fourier_display(self):
@@ -4942,34 +4774,34 @@ class FretTab(QWidget):
         if not self.distribution_enabled:
             return
             
-        print("\n=== update_fourier_display called ===")
+        dprint("\n=== update_fourier_display called ===")
         
         # Make sure we have the list widget and it has a selection
         if not hasattr(self, 'image_list_widget'):
-            print("No image_list_widget found")
+            dprint("No image_list_widget found")
             return
             
         current_item = self.image_list_widget.currentItem()
         if not current_item:
-            print("No current item selected")
+            dprint("No current item selected")
             # Try to select the first item if none is selected
             if self.image_list_widget.count() > 0:
-                print("Selecting first item in the list")
+                dprint("Selecting first item in the list")
                 self.image_list_widget.setCurrentItem(self.image_list_widget.item(0))
                 current_item = self.image_list_widget.currentItem()
                 if not current_item:
-                    print("Failed to select first item")
+                    dprint("Failed to select first item")
                     return
             else:
-                print("No items in the list to select")
+                dprint("No items in the list to select")
                 return
         
         current_path = current_item.text()
-        print(f"Current path: {current_path}")
+        dprint(f"Current path: {current_path}")
         
         # Check if we have analysis results
         if not self.analysis_results:
-            print("No analysis results available")
+            dprint("No analysis results available")
             # Clear the display if no analysis results
             if hasattr(self, 'fourier_figure'):
                 self.fourier_figure.clear()
@@ -4983,19 +4815,19 @@ class FretTab(QWidget):
         
         # Get the actual file path from the item's data if available
         file_path = current_item.data(Qt.UserRole) if hasattr(current_item, 'data') else current_path
-        print(f"Looking up analysis for file path: {file_path}")
+        dprint(f"Looking up analysis for file path: {file_path}")
             
         # Find matching analysis result
         result = self._find_analysis_result(file_path)
         if result is None:
             # Try one more time with the display text if we were using the data
             if file_path != current_path:
-                print(f"No match found with data, trying display text: {current_path}")
+                dprint(f"No match found with data, trying display text: {current_path}")
                 result = self._find_analysis_result(current_path)
                 
         if result is None:
-            print(f"No analysis results found for: {current_path}")
-            print(f"Available analysis results: {list(self.analysis_results.keys())}")
+            dprint(f"No analysis results found for: {current_path}")
+            dprint(f"Available analysis results: {list(self.analysis_results.keys())}")
             # Clear the display if no matching result found
             if hasattr(self, 'fourier_figure'):
                 self.fourier_figure.clear()
@@ -5009,11 +4841,11 @@ class FretTab(QWidget):
             
         # Get the selected formula
         if not hasattr(self, 'fourier_formula_combo') or self.fourier_formula_combo.count() == 0:
-            print("No formula combo box or no formulas available")
+            dprint("No formula combo box or no formulas available")
             return
             
         formula = self.fourier_formula_combo.currentText()
-        print(f"Selected formula: {formula}")
+        dprint(f"Selected formula: {formula}")
         
         # Try to get efficiency map from various possible locations
         self.current_efficiency_map = None
@@ -5028,17 +4860,17 @@ class FretTab(QWidget):
         for source, key in efficiency_sources:
             if source and key in source and isinstance(source[key], np.ndarray):
                 self.current_efficiency_map = source[key]
-                print(f"Found efficiency map in {key} with shape {self.current_efficiency_map.shape}")
+                dprint(f"Found efficiency map in {key} with shape {self.current_efficiency_map.shape}")
                 break
                 
         if self.current_efficiency_map is None:
-            print(f"Could not find efficiency map for formula: {formula}")
-            print("Available keys in result:")
+            dprint(f"Could not find efficiency map for formula: {formula}")
+            dprint("Available keys in result:")
             for key, value in result.items():
                 if isinstance(value, (np.ndarray, dict)):
-                    print(f"- {key}: {type(value).__name__}")
+                    dprint(f"- {key}: {type(value).__name__}")
                 else:
-                    print(f"- {key}: {type(value).__name__}")
+                    dprint(f"- {key}: {type(value).__name__}")
             # Clear the display if no efficiency map found
             if hasattr(self, 'fourier_figure'):
                 self.fourier_figure.clear()
@@ -5054,22 +4886,22 @@ class FretTab(QWidget):
         self.cell_masks = {}
         if 'cell_masks' in result:
             self.cell_masks = result['cell_masks']
-            print(f"Found {len(self.cell_masks)} cell masks in 'cell_masks'")
+            dprint(f"Found {len(self.cell_masks)} cell masks in 'cell_masks'")
         elif '_labels' in result:
             labels = result['_labels']
             if isinstance(labels, np.ndarray):
                 for cell_id in np.unique(labels):
                     if cell_id > 0:  # Skip background
                         self.cell_masks[cell_id] = (labels == cell_id)
-                print(f"Generated {len(self.cell_masks)} cell masks from '_labels'")
+                dprint(f"Generated {len(self.cell_masks)} cell masks from '_labels'")
         
         # Update the display
-        print("Updating Distribution Analysis image display...")
+        dprint("Updating Distribution Analysis image display...")
         self.update_fourier_image_display()
         
         # Update cell analysis if a cell is selected
         if hasattr(self, 'current_cell_id') and self.current_cell_id is not None:
-            print(f"Updating analysis for cell {self.current_cell_id}")
+            dprint(f"Updating analysis for cell {self.current_cell_id}")
             self.update_cell_analysis()
     
     def update_fourier_image_display(self):
@@ -5077,23 +4909,23 @@ class FretTab(QWidget):
         if not self.distribution_enabled:
             return
             
-        print("\n=== update_fourier_image_display called ===")
+        dprint("\n=== update_fourier_image_display called ===")
         
         if not hasattr(self, 'fourier_image_figure') or self.fourier_image_figure is None:
-            print("No fourier_image_figure found")
+            dprint("No fourier_image_figure found")
             return
             
         # Clear the figure
         self.fourier_image_figure.clear()
         
         if self.current_efficiency_map is None:
-            print("No efficiency map available for display")
+            dprint("No efficiency map available for display")
             ax = self.fourier_image_figure.add_subplot(111)
             ax.text(0.5, 0.5, 'No efficiency data available', 
                    ha='center', va='center', transform=ax.transAxes)
             ax.axis('off')
         else:
-            print(f"Displaying efficiency map with shape: {self.current_efficiency_map.shape}")
+            dprint(f"Displaying efficiency map with shape: {self.current_efficiency_map.shape}")
             # Plot the efficiency map with cell outlines
             ax = self.fourier_image_figure.add_subplot(111)
             
@@ -5139,17 +4971,17 @@ class FretTab(QWidget):
                     ax.set_title('Efficiency Map')
                     
             except Exception as e:
-                print(f"Error in update_fourier_image_display: {str(e)}")
+                dprint(f"Error in update_fourier_image_display: {str(e)}")
                 ax = self.fourier_image_figure.add_subplot(111)
                 ax.text(0.5, 0.5, 'Error displaying image', 
                        ha='center', va='center', transform=ax.transAxes)
                 ax.axis('off')
         
         # Force a redraw of the canvas
-        self.fourier_image_canvas.draw()
+        self.fourier_image_canvas.draw_idle()
         
         # Update the canvas
-        self.fourier_image_canvas.draw()
+        self.fourier_image_canvas.draw_idle()
     
     def on_analysis_completed(self, image_path):
         """Handle analysis completion by updating the Distribution Analysis tab."""
@@ -5172,10 +5004,10 @@ class FretTab(QWidget):
         if not self.distribution_enabled:
             if hasattr(self, 'fft_figure'):
                 self.fft_figure.clear()
-                self.fft_canvas.draw()
+                self.fft_canvas.draw_idle()
             if hasattr(self, 'fourier_image_figure'):
                 self.fourier_image_figure.clear()
-                self.fourier_image_canvas.draw()
+                self.fourier_image_canvas.draw_idle()
             if hasattr(self, 'excluded_cells_label'):
                 self.excluded_cells_label.setText(f"Excluded Cells: 0")
             if hasattr(self, 'excluded_cells_ratio_label'):
@@ -5207,12 +5039,12 @@ class FretTab(QWidget):
         self.update_fourier_display()
         
         # Debug: Print the available keys in the result
-        print("\n=== Formula changed. Available data in result: ===")
+        dprint("\n=== Formula changed. Available data in result: ===")
         for key, value in result.items():
             if isinstance(value, np.ndarray):
-                print(f"- {key}: ndarray with shape {value.shape}")
+                dprint(f"- {key}: ndarray with shape {value.shape}")
             else:
-                print(f"- {key}: {type(value).__name__}")
+                dprint(f"- {key}: {type(value).__name__}")
         
         # Update cell masks if labels are available
         if '_labels' in result and isinstance(result['_labels'], np.ndarray):
@@ -5221,15 +5053,15 @@ class FretTab(QWidget):
             for cell_id in np.unique(labels):
                 if cell_id > 0:  # Skip background
                     self.cell_masks[cell_id] = (labels == cell_id)
-            print(f"Found {len(self.cell_masks)} cell masks")
+            dprint(f"Found {len(self.cell_masks)} cell masks")
         
         # Update the display
-        print("Updating Distribution Analysis image display...")
+        dprint("Updating Distribution Analysis image display...")
         self.update_fourier_image_display()
         
         # If we have a cell selected, update its analysis
         if hasattr(self, 'current_cell_id') and self.current_cell_id is not None:
-            print(f"Updating analysis for cell {self.current_cell_id}")
+            dprint(f"Updating analysis for cell {self.current_cell_id}")
             self.update_cell_analysis()
     
     def update_fourier_formula_list(self):
@@ -5269,16 +5101,16 @@ class FretTab(QWidget):
             
             # Force an update of the figure
             if hasattr(self, 'fourier_image_canvas'):
-                self.fourier_image_canvas.draw()
+                self.fourier_image_canvas.draw_idle()
         if not current_item or not self.analysis_results:
             self.figure.clear()
-            self.canvas.draw()
+            self.canvas.draw_idle()
             return
             
         file_path = self.image_paths[self.image_list_widget.row(current_item)]
         if file_path not in self.analysis_results:
             self.figure.clear()
-            self.canvas.draw()
+            self.canvas.draw_idle()
             return
         selected_formulas = [name for name, cb in self.formula_checkboxes.items() if cb.isChecked()]
         efficiencies = self.analysis_results[file_path]
@@ -5342,7 +5174,7 @@ class FretTab(QWidget):
                 f"{percent_above:.1f}%",
                 str(total_nz)
             ])
-        self.canvas.draw()
+        self.canvas.draw_idle()
         self.current_stats_table.setRowCount(len(stats_rows))
         for row_idx, row_data in enumerate(stats_rows):
             for col_idx, cell_data in enumerate(row_data):
@@ -5352,17 +5184,32 @@ class FretTab(QWidget):
             labels_arr = efficiencies["_labels"]
             label_ids = np.unique(labels_arr)
             label_ids = label_ids[label_ids > 0]
+            # Precompute the flat pixel indices for every label ONCE, instead of a
+            # full-image (labels_arr == lbl) scan per label x formula. Pure speed-up:
+            # the per-cell value set (hence every statistic) is identical; only the
+            # pixel order within a cell differs, which does not affect means/counts.
+            flat_labels = labels_arr.ravel()
+            order = np.argsort(flat_labels, kind='stable')
+            sorted_labels = flat_labels[order]
+            uniq, starts = np.unique(sorted_labels, return_index=True)
+            starts = np.append(starts, sorted_labels.size)
+            label_to_slice = {int(u): (int(starts[k]), int(starts[k + 1]))
+                              for k, u in enumerate(uniq)}
+            # The (un-thresholded, issue #49) stats map per formula, flattened once.
+            stats_flat = {
+                fn: self._stats_eff_map(efficiencies, fn).ravel()
+                for fn in selected_formulas if fn in efficiencies
+            }
             rows = []
             for lbl in label_ids:
-                cell_mask = labels_arr == lbl
+                s, e = label_to_slice[int(lbl)]
+                cell_idx = order[s:e]
                 for formula_name in selected_formulas:
-                    if formula_name not in efficiencies:
+                    eff_flat = stats_flat.get(formula_name)
+                    if eff_flat is None:
                         continue
-                    # Use the un-thresholded map so the non-zero average is
-                    # distinct from the thresholded average (issue #49).
-                    eff_map = self._stats_eff_map(efficiencies, formula_name)
-                    mask = (cell_mask & np.isfinite(eff_map) & (eff_map > 0))
-                    vals = eff_map[mask]
+                    vals = eff_flat[cell_idx]
+                    vals = vals[np.isfinite(vals) & (vals > 0)]
                     if vals.size == 0:
                         continue
                     below_thresh = vals[vals < lower_thr].size

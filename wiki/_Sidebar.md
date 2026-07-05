@@ -10,6 +10,7 @@
 - [[Segmentation]]
 - [[Bleed-Through Correction]]
 - [[FRET Analysis]]
+- [[Intensity and Densitometry]]
 
 **Results & reference**
 - [[Results and Visualization]]
