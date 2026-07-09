@@ -248,28 +248,44 @@ status "Creating application bundle..."
 mkdir -p "$APP_MACOS"
 mkdir -p "$APP_RESOURCES"
 
-# Create the main executable
+# Create the main executable.
+#
+# The .app bundle lives in /Applications, but the virtual environment and the
+# GUI package live in the extracted project directory. We therefore bake the
+# absolute project path (known here at install time as $PROJECT_ROOT) into the
+# launcher rather than deriving it from the bundle's own location. The heredoc
+# is intentionally UNQUOTED so $PROJECT_ROOT expands now, while the runtime
+# variables are escaped (\$...) so they are evaluated when the app is launched.
 APP_MAIN="$APP_MACOS/$APP_NAME"
-cat > "$APP_MAIN" << 'EOL'
+cat > "$APP_MAIN" << EOL
 #!/bin/bash
-# Get the directory of the app bundle
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+# Absolute path to the installed SONLab FRET Tool project (baked in at install time)
+PROJECT_DIR="$PROJECT_ROOT"
 
-# Set working directory explicitly
-cd "$PROJECT_DIR" || exit 1
+# Log launch output so failures are diagnosable (GUI apps have no console)
+LOG_FILE="\$HOME/Library/Logs/SONLab_FRET_Tool.log"
+mkdir -p "\$(dirname "\$LOG_FILE")" 2>/dev/null
+exec >>"\$LOG_FILE" 2>&1
+echo "--- Launch \$(date) ---"
 
-# Check if virtual environment exists
-if [ ! -d "$PROJECT_DIR/venv" ]; then
-    osascript -e 'display dialog "Error: Virtual environment not found at '$PROJECT_DIR/venv'" buttons {"OK"} default button 1 with icon stop'
+# Set working directory explicitly so 'python -m GUI.main_gui' can resolve the package
+if ! cd "\$PROJECT_DIR"; then
+    osascript -e 'display dialog "SONLab FRET Tool: install directory not found at $PROJECT_ROOT.\n\nPlease re-run the installer." buttons {"OK"} default button 1 with icon stop'
     exit 1
 fi
 
-# Activate virtual environment
-source "$PROJECT_DIR/venv/bin/activate"
+# Check that the virtual environment exists
+if [ ! -x "\$PROJECT_DIR/venv/bin/python" ]; then
+    osascript -e 'display dialog "SONLab FRET Tool: virtual environment not found at $PROJECT_ROOT/venv.\n\nPlease re-run install_mac.sh." buttons {"OK"} default button 1 with icon stop'
+    exit 1
+fi
 
-# Run the application
-exec python -m GUI.main_gui "$@"
+# Activate the virtual environment and run the application using its interpreter
+source "\$PROJECT_DIR/venv/bin/activate"
+if ! "\$PROJECT_DIR/venv/bin/python" -m GUI.main_gui "\$@"; then
+    osascript -e 'display dialog "SONLab FRET Tool failed to start.\n\nSee ~/Library/Logs/SONLab_FRET_Tool.log for details." buttons {"OK"} default button 1 with icon stop'
+    exit 1
+fi
 EOL
 
 # Make the main executable
@@ -292,9 +308,9 @@ cat > "$APP_CONTENTS/Info.plist" << EOL
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleVersion</key>
-    <string>1.0</string>
+    <string>2.1.0</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
+    <string>2.1.0</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>NSHighResolutionCapable</key>

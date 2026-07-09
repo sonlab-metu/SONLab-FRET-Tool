@@ -14,7 +14,7 @@
 set -euo pipefail
 
 # Default to the public repository's wiki.
-WIKI_REMOTE="${WIKI_REMOTE:-git@github.com:aznursoy/SONLab-FRET-Tool.wiki.git}"
+WIKI_REMOTE="${WIKI_REMOTE:-git@github.com:sonlab-metu/SONLab-FRET-Tool.wiki.git}"
 
 # This script lives in the wiki source folder.
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
