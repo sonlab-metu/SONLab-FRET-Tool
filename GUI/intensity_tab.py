@@ -32,8 +32,6 @@ from PyQt5.QtCore import Qt
 
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
-from matplotlib.patches import Rectangle
 import matplotlib.cm as cm
 
 try:
@@ -84,6 +82,7 @@ class IntensityAnalysisTab(QWidget):
         self._popup_refs = []
         self._prefs_dirty = False
         self.current_theme = theme_system.current_theme_name()
+        self.setAcceptDrops(True)
 
         self.init_ui()
         self.load_preferences()
@@ -153,7 +152,9 @@ class IntensityAnalysisTab(QWidget):
 
         self.image_list = QListWidget()
         self.image_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.image_list.setToolTip("Segmented stacks (e.g. 'both_segmented_*.tif' from the Segmentation tab).")
+        self.image_list.setToolTip(
+            "Segmented stacks (e.g. 'both_segmented_*.tif' from the Segmentation tab).\n"
+            "Drag & drop TIFF or CZI files here to add them.")
         v.addWidget(self.image_list)
 
         grp_row = QHBoxLayout()
@@ -323,6 +324,17 @@ class IntensityAnalysisTab(QWidget):
         xy_row.addWidget(self.scatter_y_combo, 1)
         xy_row.addStretch()
         scatter_widget.layout().insertLayout(0, xy_row)
+
+        # Per-group visibility toggles: each group gets its own colour, marker
+        # and regression line, and can be shown or hidden independently.
+        self.scatter_group_row = QHBoxLayout()
+        self._scatter_group_checks = {}
+        self.scatter_group_row.addWidget(QLabel("Groups:"))
+        self.scatter_pooled_check = QCheckBox("Pooled fit")
+        self.scatter_pooled_check.setToolTip(
+            "Also fit a single regression across every visible group (dashed).")
+        self.scatter_pooled_check.toggled.connect(self.update_scatter)
+        scatter_widget.layout().insertLayout(1, self.scatter_group_row)
         self.plot_tabs.addTab(scatter_widget, "Scatter / Correlation")
 
         # Summary tab
@@ -334,10 +346,10 @@ class IntensityAnalysisTab(QWidget):
         return right
 
     def _plot_container(self, canvas, kind):
-        """Wrap a canvas with a toolbar and Pop Out / Legend buttons."""
+        """Wrap a canvas with a toolbar and Pop Out / Save / Legend buttons."""
         w = QWidget()
         lay = QVBoxLayout(w)
-        toolbar = NavigationToolbar(canvas, w)
+        toolbar = ui_widgets.plot_toolbar(canvas, w, self.current_theme)
         lay.addWidget(toolbar)
         lay.addWidget(canvas)
         setattr(self, f"{kind}_toolbar", toolbar)
@@ -347,14 +359,37 @@ class IntensityAnalysisTab(QWidget):
         ui_widgets.set_button_icon(popout, "image")
         popout.clicked.connect(lambda: self.popout(kind))
         btns.addWidget(popout)
-        if kind in ("hist", "box"):
-            legend_btn = QPushButton("Legend")
-            ui_widgets.set_button_icon(legend_btn, "layers")
-            legend_btn.clicked.connect(lambda: self.open_legend(kind))
-            btns.addWidget(legend_btn)
+        save_btn = QPushButton("Save Plot (300 DPI)")
+        save_btn.setToolTip("Save as PNG or TIFF at 300 DPI. The legend is saved\n"
+                            "next to it as its own image (plot.tif + plot_legend.tif).")
+        ui_widgets.set_button_icon(save_btn, "save")
+        save_btn.clicked.connect(
+            lambda: self._save_figure(getattr(self, f"{kind}_fig"), kind))
+        btns.addWidget(save_btn)
+        legend_btn = QPushButton("Legend")
+        ui_widgets.set_button_icon(legend_btn, "layers")
+        legend_btn.clicked.connect(lambda: self.open_legend(kind))
+        btns.addWidget(legend_btn)
         btns.addStretch()
         lay.addLayout(btns)
         return w
+
+    # -------------------------------------------------------- drag & drop ---
+    STACK_EXTENSIONS = ('.tif', '.tiff', '.czi')
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        files = [url.toLocalFile() for url in event.mimeData().urls()]
+        valid = [f for f in files if f.lower().endswith(self.STACK_EXTENSIONS)]
+        if valid:
+            self.add_image_paths(valid)
+        elif files:
+            self.update_status(
+                f"Ignored {len(files)} dropped file(s): expected "
+                f"{', '.join(self.STACK_EXTENSIONS)} stacks.")
 
     # -------------------------------------------------------- image list ---
     def add_images_dialog(self):
@@ -647,6 +682,13 @@ class IntensityAnalysisTab(QWidget):
         cmap = cm.get_cmap('tab10' if n <= 10 else 'tab20')
         return cmap(i % cmap.N)
 
+    # Marker shapes back up the colours so groups stay distinguishable in
+    # greyscale print and for colour-blind readers.
+    GROUP_MARKERS = ['o', 's', '^', 'D', 'v', 'P', 'X', '*', '<', '>']
+
+    def _group_marker(self, i):
+        return self.GROUP_MARKERS[i % len(self.GROUP_MARKERS)]
+
     # ------------------------------------------------------------ plotting ---
     def refresh_plots(self):
         self.update_histogram()
@@ -757,40 +799,113 @@ class IntensityAnalysisTab(QWidget):
                     rows.append(r)
         return rows
 
-    def _draw_scatter(self, ax):
-        xkey = self.scatter_x_combo.currentData()
-        ykey = self.scatter_y_combo.currentData()
-        rows = self._all_rows_for_channel()
-        xs, ys = [], []
-        for r in rows:
+    def _scatter_xy_by_group(self, xkey, ykey):
+        """Return (ordered_groups, {group: (x_array, y_array)}) for the active channel."""
+        from collections import defaultdict
+        data = defaultdict(lambda: ([], []))
+        for r in self._all_rows_for_channel():
             xv, yv = r.get(xkey), r.get(ykey)
             if xv is None or yv is None or not (np.isfinite(xv) and np.isfinite(yv)):
                 continue
-            xs.append(xv)
-            ys.append(yv)
-        if len(xs) < 2:
-            ax.text(0.5, 0.5, "Need ≥2 cells with finite X and Y",
-                    ha='center', va='center', transform=ax.transAxes)
+            data[r["group"]][0].append(xv)
+            data[r["group"]][1].append(yv)
+        groups = sorted(data.keys())
+        return groups, {g: (np.asarray(data[g][0], dtype=float),
+                            np.asarray(data[g][1], dtype=float)) for g in groups}
+
+    def _rebuild_scatter_group_toggles(self):
+        """Sync the per-group check boxes with the groups present in the results."""
+        groups, _ = self._scatter_xy_by_group(self.scatter_x_combo.currentData(),
+                                              self.scatter_y_combo.currentData())
+        if list(self._scatter_group_checks.keys()) == groups:
             return
-        xs = np.asarray(xs)
-        ys = np.asarray(ys)
-        ax.scatter(xs, ys, s=10, alpha=0.5, color=self._group_color(0, 1))
-        # Linear regression + Pearson r (literature-standard correlation).
+
+        # Empty the row, keeping the pooled-fit box (it is re-added below).
+        while self.scatter_group_row.count():
+            item = self.scatter_group_row.takeAt(0)
+            widget = item.widget()
+            if widget is not None and widget is not self.scatter_pooled_check:
+                widget.setParent(None)
+                widget.deleteLater()
+        self._scatter_group_checks = {}
+
+        self.scatter_group_row.addWidget(QLabel("Groups:"))
+        for i, g in enumerate(groups):
+            check = QCheckBox(g)
+            check.setChecked(True)
+            color = self._group_color(i, len(groups))
+            hexcol = '#%02x%02x%02x' % tuple(int(255 * c) for c in color[:3])
+            check.setToolTip(f"Show '{g}' (marker '{self._group_marker(i)}') and its fit.")
+            check.setStyleSheet(f"QCheckBox {{ color: {hexcol}; font-weight: 600; }}")
+            check.toggled.connect(self.update_scatter)
+            self._scatter_group_checks[g] = check
+            self.scatter_group_row.addWidget(check)
+        self.scatter_group_row.addWidget(self.scatter_pooled_check)
+        self.scatter_group_row.addStretch()
+
+    def _scatter_visible(self, group):
+        check = self._scatter_group_checks.get(group)
+        return check is None or check.isChecked()
+
+    def _fit_label(self, name, xs, ys):
+        """Fit y~x and return (label, line_xy) — line_xy is None when no fit is possible."""
+        if xs.size < 2 or np.ptp(xs) == 0:
+            return f"{name}: n={xs.size} (too few points to fit)", None
         try:
             lr = sp_stats.linregress(xs, ys)
-            xln = np.linspace(xs.min(), xs.max(), 100)
-            ax.plot(xln, lr.slope * xln + lr.intercept, color='crimson', lw=1.5,
-                    label=f"y={lr.slope:.3g}x+{lr.intercept:.3g}\nr={lr.rvalue:.3f}, p={lr.pvalue:.2e}")
-            ax.legend(loc='best', fontsize=8)
         except Exception as e:
-            dprint(f"scatter fit failed: {e}")
+            dprint(f"scatter fit failed for {name}: {e}")
+            return f"{name}: n={xs.size} (fit failed)", None
+        xln = np.linspace(xs.min(), xs.max(), 100)
+        label = (f"{name}: y={lr.slope:.3g}x+{lr.intercept:.3g}, "
+                 f"r={lr.rvalue:.3f}, p={lr.pvalue:.2e} (n={xs.size})")
+        return label, (xln, lr.slope * xln + lr.intercept)
+
+    def _draw_scatter(self, ax):
+        xkey = self.scatter_x_combo.currentData()
+        ykey = self.scatter_y_combo.currentData()
+        groups, data = self._scatter_xy_by_group(xkey, ykey)
+        entries = []
+        visible = [g for g in groups if self._scatter_visible(g)]
+        n_points = sum(data[g][0].size for g in visible)
+        if n_points < 2:
+            ax.text(0.5, 0.5, "Need ≥2 cells with finite X and Y",
+                    ha='center', va='center', transform=ax.transAxes)
+            return entries
+
+        # Index over *all* groups so a group keeps its colour and marker when
+        # other groups are toggled off.
+        for i, g in enumerate(groups):
+            if g not in visible:
+                continue
+            xs, ys = data[g]
+            color = self._group_color(i, len(groups))
+            marker = self._group_marker(i)
+            ax.scatter(xs, ys, s=14, alpha=0.55, color=color, marker=marker,
+                       edgecolors='none', zorder=2)
+            label, line = self._fit_label(g, xs, ys)
+            if line is not None:
+                ax.plot(line[0], line[1], color=color, lw=1.5, zorder=3)
+            entries.append((color, label, marker))
+
+        # Optional single fit across every visible group, for comparison.
+        if self.scatter_pooled_check.isChecked() and len(visible) > 1:
+            pooled_x = np.concatenate([data[g][0] for g in visible])
+            pooled_y = np.concatenate([data[g][1] for g in visible])
+            label, line = self._fit_label("Pooled", pooled_x, pooled_y)
+            if line is not None:
+                ax.plot(line[0], line[1], color='0.4', lw=1.8, ls='--', zorder=4)
+            entries.append(('0.4', label, None))
+
         ax.set_xlabel(METRIC_LABELS.get(xkey, xkey))
         ax.set_ylabel(METRIC_LABELS.get(ykey, ykey))
         ax.set_title(f"Correlation — {self._active_channel()}")
+        return entries
 
     def update_scatter(self):
+        self._rebuild_scatter_group_toggles()
         self.scatter_ax.clear()
-        self._draw_scatter(self.scatter_ax)
+        self._scatter_entries = self._draw_scatter(self.scatter_ax)
         theme_system.apply_axes_theme(self.scatter_ax, self.current_theme)
         self.scatter_fig.tight_layout()
         self.scatter_canvas.draw_idle()
@@ -831,23 +946,28 @@ class IntensityAnalysisTab(QWidget):
         fig.tight_layout()
         self._show_figure_dialog(fig, title, kind)
 
+    def _legend_entries(self, kind):
+        """The (color, label[, marker]) entries backing ``kind``'s legend."""
+        return getattr(self, f"_{kind}_entries", None) or []
+
     def _show_figure_dialog(self, fig, title, kind):
         dlg = QDialog(self)
         dlg.setWindowTitle(title)
         dlg.resize(900, 680)
         lay = QVBoxLayout(dlg)
         canvas = FigureCanvas(fig)
-        toolbar = NavigationToolbar(canvas, dlg)
-        theme_system.style_toolbar(toolbar, self.current_theme)
+        toolbar = ui_widgets.plot_toolbar(canvas, dlg, self.current_theme)
         lay.addWidget(toolbar)
         lay.addWidget(canvas)
 
         btns = QHBoxLayout()
         save_btn = QPushButton("Save Plot (300 DPI)")
+        save_btn.setToolTip("Save as PNG or TIFF at 300 DPI. The legend is saved\n"
+                            "next to it as its own image (plot.tif + plot_legend.tif).")
         ui_widgets.set_button_icon(save_btn, "save")
         save_btn.clicked.connect(lambda: self._save_figure(fig, kind))
         btns.addWidget(save_btn)
-        if kind in ("hist", "box"):
+        if kind in ("hist", "box", "scatter"):
             legend_btn = QPushButton("Legend")
             ui_widgets.set_button_icon(legend_btn, "layers")
             legend_btn.clicked.connect(lambda: self.open_legend(kind))
@@ -872,34 +992,26 @@ class IntensityAnalysisTab(QWidget):
         dlg.show()
 
     def open_legend(self, kind):
-        entries = getattr(self, f"_{kind}_entries", None) or []
+        entries = self._legend_entries(kind)
         if not entries:
             self.update_status("No legend entries — measure first.")
             return
-        title = f"Legend — {'Histogram' if kind == 'hist' else 'Box Plot'}"
-        n = len(entries)
-        fig = Figure(figsize=(4.8, 0.36 * n + 0.6))
-        ax = fig.add_subplot(111)
-        ax.axis('off')
-        handles = [Rectangle((0, 0), 1, 1, color=c) for c, _ in entries]
-        labels = [lbl for _, lbl in entries]
-        ax.legend(handles, labels, loc='center', frameon=False, fontsize=9)
-        theme_system.apply_figure_theme(fig, self.current_theme)
+        title = "Legend — " + {"hist": "Histogram", "box": "Box Plot",
+                               "scatter": "Scatter / Correlation"}.get(kind, "Plot")
+        fig = ui_widgets.make_legend_figure(entries, self.current_theme)
         self._show_figure_dialog(fig, title, "legend")
 
     def _save_figure(self, fig, kind):
-        default = f"intensity_{kind}.png"
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save plot", default,
-            "PNG (*.png);;TIFF (*.tif);;PDF (*.pdf);;SVG (*.svg)")
+        """Save ``fig`` at 300 DPI, writing its legend beside it as its own image."""
+        path, legend_path = ui_widgets.save_plot_dialog(
+            self, fig, f"intensity_{kind}.png",
+            legend_entries=self._legend_entries(kind), theme=self.current_theme)
         if not path:
             return
-        try:
-            fig.savefig(path, dpi=300, bbox_inches='tight',
-                        facecolor=fig.get_facecolor(), edgecolor='none')
-            self.update_status(f"Saved: {os.path.basename(path)}")
-        except Exception as e:
-            QMessageBox.warning(self, "Save failed", str(e))
+        saved = os.path.basename(path)
+        if legend_path:
+            saved += f" + {os.path.basename(legend_path)}"
+        self.update_status(f"Saved: {saved}")
 
     def show_stats_dialog(self):
         report = getattr(self, "_last_stats_report", None)

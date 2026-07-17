@@ -11,15 +11,19 @@ Two things live here:
 Icons are attached to buttons via :func:`set_button_icon`, which records the
 icon name as a Qt dynamic property. :func:`apply_icon_theme` walks a widget tree
 and re-tints every such button, so icons follow light/dark theme switches.
+
+The plot helpers (:func:`plot_toolbar`, :func:`save_plot_dialog`) give every
+analysis tab one consistent, publication-quality figure export.
 """
 
 import os
+import re
 
 from PyQt5.QtCore import Qt, QSize, QRectF, QPointF
 from PyQt5.QtGui import QIcon, QPixmap, QPainter, QPen, QColor, QPainterPath, QBrush
 from PyQt5.QtWidgets import (QToolButton, QAbstractButton, QDialog, QVBoxLayout,
                              QHBoxLayout, QTreeWidget, QTreeWidgetItem, QPlainTextEdit,
-                             QPushButton, QLabel)
+                             QPushButton, QLabel, QFileDialog, QMessageBox)
 
 try:
     from GUI import theme as theme_system
@@ -234,6 +238,173 @@ def info_button(tooltip_text, parent=None):
     )
     set_button_icon(btn, "info", size=15)
     return btn
+
+
+# ---------------------------------------------------------------------------
+# Plot toolbar and figure export
+# ---------------------------------------------------------------------------
+
+_plot_toolbar_class = None
+
+
+def _plot_toolbar_type():
+    """The navigation toolbar class, minus Save and its now-dangling separator.
+
+    Built once, on first use, so importing this module does not drag in the
+    matplotlib Qt backend.
+    """
+    global _plot_toolbar_class
+    if _plot_toolbar_class is None:
+        from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT
+
+        items = [t for t in NavigationToolbar2QT.toolitems if t[0] != 'Save']
+        while items and items[-1][0] is None:  # separators are (None, None, None, None)
+            items.pop()
+
+        class PlotToolbar(NavigationToolbar2QT):
+            toolitems = items
+
+        _plot_toolbar_class = PlotToolbar
+    return _plot_toolbar_class
+
+
+def plot_toolbar(canvas, parent, theme=None):
+    """A navigation toolbar for ``canvas`` with matplotlib's Save button removed.
+
+    Figures are saved through the tabs' own "Save Plot" buttons, which export at
+    300 DPI and write the legend alongside. The toolbar's own save would quietly
+    produce a different image (screen resolution, no companion legend), so it is
+    dropped rather than left as a second, worse-behaved way to do the same thing.
+    """
+    toolbar = _plot_toolbar_type()(canvas, parent)
+    theme_system.style_toolbar(toolbar, theme or theme_system.current_theme_name())
+    return toolbar
+
+
+# PNG and TIFF are both offered everywhere a figure can be exported: PNG for
+# slides and the web, TIFF because journals ask for it.
+PLOT_FILE_FILTER = ("PNG image (*.png);;TIFF image (*.tif *.tiff);;"
+                    "PDF document (*.pdf);;SVG image (*.svg)")
+
+
+def _apply_selected_extension(path, selected_filter):
+    """Append the chosen filter's extension when the typed name lacks a known one."""
+    exts = re.findall(r"\*(\.[A-Za-z0-9]+)", selected_filter or "")
+    if not exts:
+        return path
+    if os.path.splitext(path)[1].lower() in [e.lower() for e in exts]:
+        return path
+    return path + exts[0]
+
+
+def legend_handles(entries, theme=None):
+    """Build legend handles for ``entries``.
+
+    Each entry is ``(color, label)`` — drawn as a filled swatch — or
+    ``(color, label, marker)``, drawn as a marker on a line so that plots which
+    distinguish groups by marker as well as colour read the same in the legend.
+    """
+    from matplotlib.patches import Rectangle
+    from matplotlib.lines import Line2D
+
+    edge = theme_system.mpl_colors(theme or theme_system.current_theme_name())["edge"]
+    handles = []
+    for entry in entries:
+        color = entry[0]
+        marker = entry[2] if len(entry) > 2 else None
+        if marker:
+            handles.append(Line2D([0], [0], color=color, marker=marker,
+                                  linestyle='-', linewidth=1.5, markersize=6))
+        else:
+            handles.append(Rectangle((0, 0), 1, 1, fc=color, ec=edge,
+                                     linewidth=0.5, alpha=0.75))
+    return handles
+
+
+def style_legend(legend, theme=None):
+    """Recolour ``legend``'s frame and text for ``theme``."""
+    if legend is None:
+        return legend
+    m = theme_system.mpl_colors(theme or theme_system.current_theme_name())
+    legend.get_frame().set_facecolor(m["bg"])
+    legend.get_frame().set_edgecolor(m["edge"])
+    for text in legend.get_texts():
+        text.set_color(m["fg"])
+    return legend
+
+
+def make_legend_figure(entries, theme=None):
+    """Build a standalone figure containing only the legend for ``entries``.
+
+    The legend is deliberately kept out of the plot itself — with many groups it
+    would crowd the axes — so it lives in its own figure, shown in the Legend
+    window and written next to the plot on save.
+    """
+    from matplotlib.figure import Figure
+
+    fig = Figure(figsize=(6.0, max(1.0, 0.36 * len(entries) + 0.6)))
+    ax = fig.add_subplot(111)
+    ax.axis('off')
+    legend = ax.legend(legend_handles(entries, theme), [str(e[1]) for e in entries],
+                       loc='center', frameon=True, fontsize=9, ncol=1,
+                       handlelength=1.4, borderpad=0.8, labelspacing=0.5)
+    theme_system.apply_figure_theme(fig, theme or theme_system.current_theme_name())
+    style_legend(legend, theme)
+    return fig
+
+
+def legend_path_for(path):
+    """The companion legend filename for a saved plot: 'plot.tif' -> 'plot_legend.tif'."""
+    stem, ext = os.path.splitext(path)
+    return f"{stem}_legend{ext}"
+
+
+def _savefig(figure, path, dpi):
+    figure.savefig(path, dpi=dpi, bbox_inches='tight',
+                   facecolor=figure.get_facecolor(), edgecolor='none')
+
+
+def save_plot_dialog(parent, figure, default_basename, legend_entries=None,
+                     theme=None, dpi=300):
+    """Ask for a path and save ``figure`` at ``dpi``, writing the legend beside it.
+
+    Offers PNG, TIFF, PDF and SVG. The plot itself stays free of a legend; when
+    ``legend_entries`` (``(color, label[, marker])`` tuples) are given, the legend
+    is written as its own image next to the plot — ``plot.tif`` gets a companion
+    ``plot_legend.tif``, in the same format and at the same resolution — so the
+    two are saved in one step and stay together.
+
+    Returns ``(plot_path, legend_path)``; ``legend_path`` is None when there is
+    no legend to write. Returns ``(None, None)`` if cancelled or on failure.
+    """
+    if not default_basename.lower().endswith(
+            ('.png', '.tif', '.tiff', '.pdf', '.svg')):
+        default_basename += '.png'
+    path, selected = QFileDialog.getSaveFileName(
+        parent, "Save plot", default_basename, PLOT_FILE_FILTER)
+    if not path:
+        return None, None
+    path = _apply_selected_extension(path, selected)
+
+    try:
+        _savefig(figure, path, dpi)
+    except Exception as e:
+        QMessageBox.critical(parent, "Save Error", f"Could not save the plot:\n{e}")
+        return None, None
+
+    if not legend_entries:
+        return path, None
+
+    legend_path = legend_path_for(path)
+    try:
+        _savefig(make_legend_figure(legend_entries, theme), legend_path, dpi)
+    except Exception as e:
+        # The plot is already on disk; report the legend failure without losing it.
+        QMessageBox.warning(parent, "Legend Not Saved",
+                            f"The plot was saved to:\n{path}\n\n"
+                            f"But its legend could not be saved:\n{e}")
+        return path, None
+    return path, legend_path
 
 
 # ---------------------------------------------------------------------------

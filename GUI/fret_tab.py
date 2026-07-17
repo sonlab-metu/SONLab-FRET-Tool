@@ -22,11 +22,10 @@ from PyQt5.QtGui import QColor, QIcon
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.legend import Legend
 from scipy.ndimage import uniform_filter, gaussian_filter
 import sys
-from PyQt5.QtCore import Qt, QTimer, QMetaObject, Q_ARG, pyqtSlot, QThread, QObject, pyqtSignal
+from PyQt5.QtCore import Qt, QTimer, QMetaObject, Q_ARG
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import QDialog
 import csv
@@ -207,82 +206,28 @@ class FretTab(QWidget):
             ax.cbar.outline.set_edgecolor(edge_color)
             ax.cbar.outline.set_linewidth(1.0)
 
-    def save_plot(self, figure, plot_type):
-        """Save the plot as a high-resolution image in the background.
-        
+    def save_plot(self, figure, plot_type, legend_entries=None):
+        """Save ``figure`` as a publication-quality (300 DPI) PNG, TIFF, PDF or SVG.
+
         Args:
             figure: The matplotlib figure to save
-            plot_type: Type of plot ('histogram' or 'boxplot') for default filename
+            plot_type: Type of plot ('histogram', 'boxplot', …) for the default filename
+            legend_entries: (color, label) tuples for plots whose legend lives in a
+                separate window; written next to the plot as its own image so the
+                two are saved together without crowding the axes.
         """
-        # Get default filename based on plot type and current formula
         default_filename = f"{plot_type}_{self.aggregate_formula_combo.currentText()}.png"
         default_filename = default_filename.replace(" ", "_")
-        
-        # Get save path from user
-        file_path, _ = QFileDialog.getSaveFileName(
-            self,
-            f"Save {plot_type} as...",
-            default_filename,
-            "PNG (*.png);;TIFF (*.tif);;PDF (*.pdf);;SVG (*.svg);;All Files (*)"
-        )
-        
+
+        file_path, legend_path = ui_widgets.save_plot_dialog(
+            self, figure, default_filename, legend_entries=legend_entries,
+            theme=self.current_theme)
         if not file_path:
-            return  # User cancelled
-            
-        # Create a worker class to handle the save operation
-        class SaveWorker(QObject):
-            finished = pyqtSignal()
-            error = pyqtSignal(str)
-            success = pyqtSignal(str)
-            
-            def __init__(self, figure, file_path):
-                super().__init__()
-                self.figure = figure
-                self.file_path = file_path
-            
-            def run(self):
-                try:
-                    # Save with high resolution (300 DPI) and tight layout
-                    self.figure.savefig(
-                        self.file_path,
-                        dpi=300,
-                        bbox_inches='tight',
-                        facecolor=self.figure.get_facecolor(),
-                        edgecolor='none',
-                        transparent=False
-                    )
-                    self.success.emit(f"Plot saved successfully to:\n{self.file_path}")
-                except Exception as e:
-                    self.error.emit(f"Error saving plot: {str(e)}")
-                finally:
-                    self.finished.emit()
-        
-        # Create thread and worker
-        self.save_thread = QThread()
-        self.save_worker = SaveWorker(figure, file_path)
-        self.save_worker.moveToThread(self.save_thread)
-        
-        # Connect signals
-        self.save_thread.started.connect(self.save_worker.run)
-        self.save_thread.finished.connect(self.update_aggregate_histogram_plot)
-        self.save_worker.finished.connect(self.save_thread.quit)
-        self.save_worker.finished.connect(self.save_worker.deleteLater)
-        self.save_thread.finished.connect(self.save_thread.deleteLater)
-        self.save_worker.success.connect(self._show_save_success)
-        self.save_worker.error.connect(self._show_save_error)
-        
-        # Start the thread
-        self.save_thread.start()
-    
-    @pyqtSlot(str)
-    def _show_save_success(self, message):
-        """Show a success message after saving."""
+            return
+        message = f"Plot saved successfully to:\n{file_path}"
+        if legend_path:
+            message += f"\n\nIts legend was saved alongside it to:\n{legend_path}"
         QMessageBox.information(self, "Save Successful", message)
-    
-    @pyqtSlot(str)
-    def _show_save_error(self, message):
-        """Show an error message if saving fails."""
-        QMessageBox.critical(self, "Save Error", message)
 
     def export_summary_to_csv(self):
         if not self.analysis_results:
@@ -683,21 +628,7 @@ class FretTab(QWidget):
         dlg.setWindowTitle(f"{title} (Pop-out)")
         layout = QVBoxLayout(dlg)
 
-        n = len(entries)
-        fig = plt.Figure(figsize=(4.8, max(1.0, 0.36 * n + 0.5)), dpi=100)
-        fig.set_facecolor('black' if self.current_theme == 'dark' else 'white')
-        ax = fig.add_subplot(111)
-        ax.axis('off')
-        handles = [plt.Rectangle((0, 0), 1, 1, fc=c, ec='black', linewidth=0.5, alpha=0.6)
-                   for c, _ in entries]
-        labels = [t for _, t in entries]
-        leg = ax.legend(handles, labels, loc='center', frameon=True, fontsize='small',
-                        ncol=1, handlelength=1.2, borderpad=0.8, labelspacing=0.5)
-        fg = 'white' if self.current_theme == 'dark' else 'black'
-        for txt in leg.get_texts():
-            txt.set_color(fg)
-        leg.get_frame().set_facecolor('0.15' if self.current_theme == 'dark' else '0.97')
-        leg.get_frame().set_edgecolor('0.5')
+        fig = ui_widgets.make_legend_figure(entries, self.current_theme)
 
         canvas = FigureCanvas(fig)
         canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -852,8 +783,10 @@ class FretTab(QWidget):
         btn_legend.setToolTip("Show the group legend (with pixel-weighted means) in its own savable window")
         btn_legend.clicked.connect(lambda: self._open_legend_popout(legend_entries, "Histogram Legend"))
         btn_save = QPushButton("Save Plot")
-        btn_save.setToolTip("Save the plot as a high-resolution (300 DPI) image")
-        btn_save.clicked.connect(lambda: self.save_plot(new_fig, "aggregate_histogram"))
+        btn_save.setToolTip("Save as PNG or TIFF at 300 DPI. The legend is saved\n"
+                            "next to it as its own image (plot.tif + plot_legend.tif)")
+        btn_save.clicked.connect(
+            lambda: self.save_plot(new_fig, "aggregate_histogram", legend_entries))
 
         btn_row = QHBoxLayout()
         btn_row.addWidget(btn_legend)
@@ -862,8 +795,7 @@ class FretTab(QWidget):
         btn_row.addStretch()
 
         # Set up the rest of the UI
-        toolbar = NavigationToolbar(canvas, dlg)
-        theme_system.style_toolbar(toolbar, theme_system.current_theme_name())
+        toolbar = ui_widgets.plot_toolbar(canvas, dlg)
         container_layout.addWidget(toolbar)
         container_layout.addWidget(canvas)
         container_layout.addLayout(btn_row)
@@ -1052,8 +984,7 @@ class FretTab(QWidget):
         new_fig.tight_layout()
 
         # Set up the rest of the UI
-        toolbar = NavigationToolbar(canvas, dlg)
-        theme_system.style_toolbar(toolbar, theme_system.current_theme_name())
+        toolbar = ui_widgets.plot_toolbar(canvas, dlg)
 
         # Create a horizontal layout for toolbar and save button
         toolbar_layout = QHBoxLayout()
@@ -1067,8 +998,10 @@ class FretTab(QWidget):
 
         # Add save button
         save_btn = QPushButton("Save Plot")
-        save_btn.setToolTip("Save the plot as a high-resolution (300 DPI) image")
-        save_btn.clicked.connect(lambda: self.save_plot(new_fig, "aggregate_boxplot"))
+        save_btn.setToolTip("Save as PNG or TIFF at 300 DPI. The legend is saved\n"
+                            "next to it as its own image (plot.tif + plot_legend.tif)")
+        save_btn.clicked.connect(
+            lambda: self.save_plot(new_fig, "aggregate_boxplot", legend_entries))
         toolbar_layout.addWidget(save_btn)
 
         # Informational stats button (does not affect the visualization).
@@ -1298,8 +1231,7 @@ class FretTab(QWidget):
                 traceback.print_exc()
         
         # Add toolbar
-        toolbar = NavigationToolbar(canvas, dlg)
-        theme_system.style_toolbar(toolbar, theme_system.current_theme_name())
+        toolbar = ui_widgets.plot_toolbar(canvas, dlg)
         
         # Add widgets to layout
         container_layout.addWidget(toolbar)
@@ -1623,7 +1555,7 @@ class FretTab(QWidget):
         self.canvas = FigureCanvas(self.figure)
         # Set explicit background color for the canvas widget
         self.canvas.setStyleSheet(f"background-color: {'#000000' if is_dark_theme else '#ffffff'};")
-        self.toolbar = NavigationToolbar(self.canvas, self)
+        self.toolbar = ui_widgets.plot_toolbar(self.canvas, self)
         # Force update of all plot themes
         if hasattr(self, 'update_plot_themes'):
             self.update_plot_themes()
@@ -1708,7 +1640,7 @@ class FretTab(QWidget):
         pop_hist_btn.setToolTip("Pop-out histogram")
         pop_hist_btn.clicked.connect(lambda: self.open_popout(self.hist_figure, "Histogram"))
         hist_content_layout.addWidget(pop_hist_btn, alignment=Qt.AlignRight)
-        toolbar_hist = NavigationToolbar(self.hist_canvas, self)
+        toolbar_hist = ui_widgets.plot_toolbar(self.hist_canvas, self)
         hist_content_layout.addWidget(toolbar_hist)
         hist_content_layout.addWidget(self.hist_canvas)
         box_ctl_layout = QHBoxLayout()
@@ -1726,7 +1658,7 @@ class FretTab(QWidget):
         pop_box_btn.setToolTip("Pop-out box plot")
         pop_box_btn.clicked.connect(lambda: self.open_popout(self.box_figure, "Box Plot"))
         hist_content_layout.addWidget(pop_box_btn, alignment=Qt.AlignRight)
-        toolbar_box = NavigationToolbar(self.box_canvas, self)
+        toolbar_box = ui_widgets.plot_toolbar(self.box_canvas, self)
         hist_content_layout.addWidget(toolbar_box)
         hist_content_layout.addWidget(self.box_canvas)
         
@@ -1822,7 +1754,7 @@ class FretTab(QWidget):
         fourier_layout.addWidget(splitter)
         
         # Add navigation toolbars
-        fourier_toolbar = NavigationToolbar(self.fourier_image_canvas, self)
+        fourier_toolbar = ui_widgets.plot_toolbar(self.fourier_image_canvas, self)
         fourier_layout.addWidget(fourier_toolbar)
         
         # Initialize class variables
@@ -1949,7 +1881,7 @@ class FretTab(QWidget):
         hist_header.addWidget(pop_agg_hist)
         
         agg_content_layout.addLayout(hist_header)
-        agg_content_layout.addWidget(NavigationToolbar(self.agg_hist_canvas, self))
+        agg_content_layout.addWidget(ui_widgets.plot_toolbar(self.agg_hist_canvas, self))
         agg_content_layout.addWidget(self.agg_hist_canvas)
         
         # Add some spacing between plots
@@ -1979,7 +1911,7 @@ class FretTab(QWidget):
         box_header.addWidget(pop_agg_box)
         
         agg_content_layout.addLayout(box_header)
-        agg_content_layout.addWidget(NavigationToolbar(self.agg_box_canvas, self))
+        agg_content_layout.addWidget(ui_widgets.plot_toolbar(self.agg_box_canvas, self))
         agg_content_layout.addWidget(self.agg_box_canvas)
         
         # Box plot controls (moved below the plot)
@@ -3180,14 +3112,12 @@ class FretTab(QWidget):
         
         # Create a new canvas for the figure
         from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-        from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
         
         canvas = FigureCanvas(new_fig)
         container_layout.addWidget(canvas)
         
         # Add navigation toolbar
-        toolbar = NavigationToolbar(canvas, dlg)
-        theme_system.style_toolbar(toolbar, theme_system.current_theme_name())
+        toolbar = ui_widgets.plot_toolbar(canvas, dlg)
         container_layout.addWidget(toolbar)
         
         # Add a button to save the figure
@@ -4179,7 +4109,9 @@ class FretTab(QWidget):
         
         # Save figure button
         save_btn = QPushButton("Save Figure")
-        save_btn.clicked.connect(lambda: self._save_figure(popup_fig))
+        save_btn.setToolTip("Save as PNG or TIFF at 300 DPI")
+        save_btn.clicked.connect(
+            lambda: self._save_figure(popup_fig, "distribution_analysis.png"))
         btn_layout.addWidget(save_btn)
         
         # Show components button (only if we have a valid GMM model)
@@ -4438,15 +4370,15 @@ class FretTab(QWidget):
         canvas.setStyleSheet(f"background-color: {{'#000000' if self.current_theme == 'dark' else '#ffffff'}};")
         
         # Add navigation toolbar
-        toolbar = NavigationToolbar(canvas, self)
-        theme_system.style_toolbar(toolbar, theme_system.current_theme_name())
+        toolbar = ui_widgets.plot_toolbar(canvas, self)
         
         # Add buttons
         btn_layout = QHBoxLayout()
         
         # Save figure button
         save_btn = QPushButton("Save Figure")
-        save_btn.clicked.connect(lambda: self._save_figure(fig))
+        save_btn.setToolTip("Save as PNG or TIFF at 300 DPI")
+        save_btn.clicked.connect(lambda: self._save_figure(fig, "component_map.png"))
         btn_layout.addWidget(save_btn)
         
         # Close button
@@ -4475,12 +4407,11 @@ class FretTab(QWidget):
         # Show the popup
         popup.exec_()
     
-    def _save_figure(self, figure):
-        """Save the figure to a file."""
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Figure", "", "PNG (*.png);;PDF (*.pdf);;SVG (*.svg)")
-        if file_path:
-            figure.savefig(file_path, bbox_inches='tight', dpi=300)
+    def _save_figure(self, figure, default_basename="figure.png"):
+        """Save the figure to a PNG/TIFF/PDF/SVG file at 300 DPI."""
+        path, _legend_path = ui_widgets.save_plot_dialog(
+            self, figure, default_basename, theme=self.current_theme)
+        return path
     
     def _plot_distribution_analysis(self, ax, cell_values, max_components=3):
         """Create the distribution analysis plot on the given axes.
