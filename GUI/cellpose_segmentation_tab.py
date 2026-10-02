@@ -2991,6 +2991,19 @@ class CellposeSegmentationTab(QWidget):
         self.btn_save.setEnabled(enabled)
         self.btn_save_transfer.setEnabled(enabled)
     
+    def _next_image_list_item(self):
+        """Return the (row, item) to select once the current image is removed.
+
+        Returns (-1, None) for an empty list: the wrap-around modulo divides by
+        the item count, which raised ZeroDivisionError when a send-to-channel
+        was triggered while the viewer still held the last removed image.
+        """
+        count = self.image_list.count()
+        if count == 0:
+            return -1, None
+        next_row = (self.image_list.row(self.image_list.currentItem()) + 1) % count
+        return next_row, self.image_list.item(next_row)
+
     def _transfer_to_channel(self, channel_type):
         """
         Internal method to transfer current image to a specific channel (donor/acceptor).
@@ -3018,8 +3031,7 @@ class CellposeSegmentationTab(QWidget):
         
         # Get the next item to select after transfer (before any removal)
         current_item = self.image_list.currentItem()
-        next_row = (self.image_list.row(current_item) + 1) % self.image_list.count()
-        next_item = self.image_list.item(next_row)
+        next_row, next_item = self._next_image_list_item()
         
         try:
             # Create the output directory (segmented folder in the input directory)
@@ -3157,8 +3169,7 @@ class CellposeSegmentationTab(QWidget):
                 
         # Get the next item to select after transfer (before any removal)
         current_item = self.image_list.currentItem()
-        next_row = (self.image_list.row(current_item) + 1) % self.image_list.count()
-        next_item = self.image_list.item(next_row)
+        next_row, next_item = self._next_image_list_item()
         
         # Get group name from user (matching FRET tab's implementation)
         group_dialog = QDialog(self)
